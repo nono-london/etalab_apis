@@ -1,12 +1,15 @@
 import setuptools
 
+with open("README.md", "r") as fh:
+    long_description = fh.read()
+
 setuptools.setup(
     name="etalab_apis",
     version="0.0.0.1",
     author="Nono London",
     author_email="",
     description="Wrapper around etalab apis",
-    long_description="",
+    long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/nono-london/etalab_apis",
     packages=["etalab_apis"],
