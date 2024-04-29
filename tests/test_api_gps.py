@@ -5,6 +5,9 @@ from etalab_apis.api_gps import EtalabGpsApi
 
 @pytest.mark.asyncio
 async def test_get_gps_coordinates():
+    """test the gps method with a full postal address that includes
+        city and postcode
+    """
     postal_address = "2 rue de la paix 75002 Paris"
     dvf_api = EtalabGpsApi()
 
@@ -16,6 +19,9 @@ async def test_get_gps_coordinates():
 
 @pytest.mark.asyncio
 async def test_get_gps_coordinates_with_insee():
+    """test the gps method with an address that has no postcode or city
+        but has an INSEE commune code
+    """
     postal_address = "2 rue de la paix"
     insee_city_code = '75102'
     dvf_api = EtalabGpsApi()
@@ -25,3 +31,5 @@ async def test_get_gps_coordinates_with_insee():
     assert gps_datas.get("city") is not None
     assert isinstance(gps_datas.get("lat"), float)
     assert isinstance(gps_datas.get("lng"), float)
+
+
