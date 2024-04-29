@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="etalab_apis",
-    version="0.0.0.2",
+    version="0.0.0.3",
     author="Nono London",
     author_email="",
     description="Wrapper around etalab apis",
