@@ -66,8 +66,8 @@ class EtalabGpsApi:
         # await asyncio.sleep(0.1)
         return result
 
-    async def batch_gps_data(self, postal_addresses: Optional[List] = None,
-                             addresses_insees: Optional[List[Tuple]] = None) -> List:
+    async def batch_gps_coordinates(self, postal_addresses: Optional[List] = None,
+                                    addresses_insees: Optional[List[Tuple]] = None) -> List:
         """
         Get gps coordinates from a list of addresses or a list of address, commune INSEE code tuples
         :param postal_addresses: a list of addresses
@@ -133,7 +133,7 @@ if __name__ == '__main__':
 
     dvf_api = EtalabGpsApi()
     try:
-        gps_datas = asyncio.run(dvf_api.batch_gps_data(addresses_insees=my_postal_addresses))
+        gps_datas = asyncio.run(dvf_api.batch_gps_coordinates(addresses_insees=my_postal_addresses))
         print(gps_datas)
 
     except Exception as e:
