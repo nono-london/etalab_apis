@@ -1,0 +1,21 @@
+# gui
+tqdm
+
+# webscrap
+aiohttp
+
+# stat
+numpy
+
+
+## test commands
+# python manage.py test --verbosity=2
+pytest
+pytest-asyncio
+
+# python -m venv .venv
+# python.exe -m pip install --upgrade pip
+
+# pip install -r requirements.txt
+# pip install -r requirements.txt --upgrade
+

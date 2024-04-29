@@ -1,0 +1,8 @@
+venv
+.idea
+
+.env
+
+etalab_apis/downloads/*
+__pycache__
+
