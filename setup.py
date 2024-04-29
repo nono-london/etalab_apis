@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="etalab_apis",
-    version="0.0.0.1",
+    version="0.0.0.2",
     author="Nono London",
     author_email="",
     description="Wrapper around etalab apis",
@@ -20,5 +20,5 @@ setuptools.setup(
     ],
     install_requires=["aiohttp", "tqdm", "numpy"],
     tests_require=["pytest", "pytest-asyncio"],
-    python_requires='>=3.11',
+    python_requires='>=3.10',
 )

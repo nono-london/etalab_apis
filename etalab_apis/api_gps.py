@@ -135,6 +135,9 @@ if __name__ == '__main__':
     try:
         gps_datas = asyncio.run(dvf_api.batch_gps_coordinates(addresses_insees=my_postal_addresses))
         print(gps_datas)
+        postal_address="1 FOND DE BOSSART 08460 NEUFMAISON"
+        gps_datas = asyncio.run(dvf_api.get_gps_coordinates(postal_address=postal_address))
+        print(gps_datas)
 
     except Exception as e:
         print(e)
