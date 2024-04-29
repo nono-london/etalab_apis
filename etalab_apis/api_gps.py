@@ -125,7 +125,7 @@ class EtalabGpsApi:
 
 
 if __name__ == '__main__':
-    start = time.time()
+    start = time()
 
     my_postal_addresses: list = [("VILLARS LES DOMBES", "01443"),
                                  ("DIVONNE LES BAINS", "01143"),
