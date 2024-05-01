@@ -25,22 +25,25 @@ class EtalabGpsApi:
     @staticmethod
     async def _read_json_response(json_response: dict) -> Union[Dict, None]:
         json_response = json_response.get("features")
-        if len(json_response) > 0:
-            gps = json_response[0].get("geometry").get("coordinates")  # (LNG, LAT)
-            if gps and isinstance(gps, list):
-                gps = tuple(gps)
-            postcode = json_response[0].get("properties").get("postcode")
-            insee_city_code = json_response[0].get("properties").get("citycode")
-            city = json_response[0].get("properties").get("city")
-            postal_address = json_response[0].get("properties").get("label")
-            gps_dict = {'gps': gps, "postcode": postcode, "insee_city_code": insee_city_code, "city": city,
-                        'postal_address': postal_address,
-                        'lat': gps[1], 'lng': gps[0]
-                        }
-
-            return gps_dict
-        else:
+        if json_response is None or len(json_response) == 0:
             return None
+
+        gps = json_response[0].get("geometry").get("coordinates")  # (LNG, LAT)
+        if gps is None:
+            return None
+
+        if isinstance(gps, list):
+            gps = tuple(gps)
+        postcode = json_response[0].get("properties").get("postcode")
+        insee_city_code = json_response[0].get("properties").get("citycode")
+        city = json_response[0].get("properties").get("city")
+        postal_address = json_response[0].get("properties").get("label")
+        gps_dict = {'gps': gps, "postcode": postcode, "insee_city_code": insee_city_code, "city": city,
+                    'postal_address': postal_address,
+                    'lat': gps[1], 'lng': gps[0]
+                    }
+
+        return gps_dict
 
     async def get_gps_coordinates(self, postal_address: str, insee_city_code: Optional[str] = None, limit: int = 1) -> \
             Union[Dict, None]:
