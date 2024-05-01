@@ -54,6 +54,9 @@ class EtalabGpsApi:
                     json_response = await response.json()
 
                     result = await self._read_json_response(json_response=json_response)
+                elif response.status == 504:
+                    # request is taking too long
+                    return None
                 else:
                     print(f"Error status: {response.status}\n"
                           f"Message: {await response.json()}")
@@ -135,7 +138,7 @@ if __name__ == '__main__':
     try:
         gps_datas = asyncio.run(dvf_api.batch_gps_coordinates(addresses_insees=my_postal_addresses))
         print(gps_datas)
-        postal_address="1 FOND DE BOSSART 08460 NEUFMAISON"
+        postal_address = "1 FOND DE BOSSART 08460 NEUFMAISON"
         gps_datas = asyncio.run(dvf_api.get_gps_coordinates(postal_address=postal_address))
         print(gps_datas)
 
