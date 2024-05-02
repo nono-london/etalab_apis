@@ -46,7 +46,7 @@ class EtalabGpsApi:
         return gps_dict
 
     async def get_gps_coordinates(self, postal_address: str, insee_city_code: Optional[str] = None, limit: int = 1) -> \
-            Union[Dict, None]:
+            Union[Dict]:
         url: str = await self._build_url(postal_address=postal_address, insee_city_code=insee_city_code, limit=limit)
         result: Union[Dict, None] = None
         # mysql_connection = aiohttp.TCPConnector(limit=5)
@@ -54,22 +54,27 @@ class EtalabGpsApi:
         async with aiohttp.ClientSession() as session:
             async with session.get(url=url, ) as response:
                 if response.status == 200:
-                    json_response = await response.json()
+                    try:
+                        json_response = await response.json()
+                        result = await self._read_json_response(json_response=json_response)
+                    except Exception as ex:
+                        print("Json error:", ex)
 
-                    result = await self._read_json_response(json_response=json_response)
                 elif response.status == 504:
                     # request is taking too long
-                    return None
+                    pass
                 else:
                     print(f"Error status: {response.status}\n"
                           f"Message: {await response.json()}")
+
                 await asyncio.sleep(0.1)
+
         if result is not None:
             result['found_result'] = True
             result['postal_address'] = postal_address
         else:
             result = {'found_result': False, 'postal_address': postal_address}
-        # await asyncio.sleep(0.1)
+
         return result
 
     async def batch_gps_coordinates(self, postal_addresses: Optional[List] = None,
