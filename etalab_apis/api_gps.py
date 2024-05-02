@@ -47,8 +47,16 @@ class EtalabGpsApi:
 
     async def get_gps_coordinates(self, postal_address: str, insee_city_code: Optional[str] = None, limit: int = 1) -> \
             Union[Dict]:
-        url: str = await self._build_url(postal_address=postal_address, insee_city_code=insee_city_code, limit=limit)
         result: Union[Dict, None] = None
+
+        # check that address has between 3 and 200 chars
+        if len(postal_address) < 4:
+            result['found_result'] = True
+            result['postal_address'] = postal_address
+        postal_address = postal_address[:200]
+
+        url: str = await self._build_url(postal_address=postal_address, insee_city_code=insee_city_code, limit=limit)
+
         # mysql_connection = aiohttp.TCPConnector(limit=5)
         # mysql_connection=mysql_connection
         async with aiohttp.ClientSession() as session:
