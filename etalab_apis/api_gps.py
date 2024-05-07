@@ -72,8 +72,11 @@ class EtalabGpsApi:
                     # request is taking too long
                     pass
                 else:
-                    print(f"Error status: {response.status}\n"
-                          f"Message: {await response.json()}")
+                    print(f"Error status: {response.status}")
+                    try:
+                        print(f"Message text: {await response.text()}")
+                    except Exception as ex:
+                        pass
 
                 await asyncio.sleep(0.1)
 
