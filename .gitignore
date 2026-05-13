@@ -6,3 +6,5 @@ venv
 etalab_apis/downloads/*
 __pycache__
 
+.playwright-mcp/
+
