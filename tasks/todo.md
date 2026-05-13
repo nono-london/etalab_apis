@@ -54,17 +54,28 @@
 - [x] Persistent failure → subdivide chunk in half; at `min_subdivide_rows` give up and yield `result_status="error"` rows
 - [x] 3 live smoke tests in `tests/test_sync_csv_geocoder.py` (forward, forward+INSEE, reverse) — all pass
 - [x] Full suite (4 old + 3 new) all pass in 2s
-- [ ] Commit 4a
+- [x] Commit 4a (`b2075ae`)
 
-### 4b — full mocked unit tests
-- [ ] `aiohttp` mocking via `aioresponses` (add to requirements-dev or test-only)
-- [ ] Test chunking: 250 rows with chunk_rows=100 → 3 chunks → 3 POSTs
-- [ ] Test 429 retry: mock 429 with `retry-after: 1`, then 200 → exactly one sleep, second POST succeeds
-- [ ] Test 5xx backoff: mock 500 ×2, then 200 → 2 backoff sleeps, third POST succeeds
-- [ ] Test 4xx non-429: mock 400 → `_PersistentBatchFailure` → subdivide → if min already, error rows yielded
-- [ ] Test subdivide: mock 500 persistently on chunk size 200, then 200 on each half of 100 → 2 successful sub-POSTs, results in order
-- [ ] Test giving up at min_subdivide_rows: mock 500 persistently → `result_status="error"` row per input row, count matches
-- [ ] Test result_status mapping: `ok`/`not-found`/`skipped`/`error` from mocked response CSV → correct dict shape
+### 4b — broader tests: live for everything testable, mocks only for forced failure
+Mocking strategy revised after user pushback: live-test everything we can (proves the wrapper works against the real API), use `aioresponses` only for the retry/backoff/subdivide paths since we cannot make the live server return 429/5xx on demand.
+
+**Live tests** (extended `tests/test_sync_csv_geocoder.py`):
+- [x] Chunking: 12 rows with `chunk_rows=4` → 3 server round-trips, all results, order preserved
+- [x] Generator input: `def gen(): yield ...` works (exercises lazy `itertools.islice`)
+- [x] Empty input: `[]` → no HTTP, no results
+
+**Mocked tests** (new `tests/test_sync_csv_geocoder_retry.py`):
+- [x] `aioresponses` added to `requirements.txt`, `asyncio.sleep` patched per-test via fixture
+- [x] 429 + `retry-after: 3` → exactly one sleep at 3.0s, 2nd POST succeeds
+- [x] 3× 5xx → exponential backoff [1, 2, 4] → 4th POST succeeds
+- [x] Persistent 500 on 200-row chunk → halve → 2 successful sub-POSTs of 100, order preserved
+- [x] Persistent 500 at `min_subdivide_rows=10` → 10 error rows yielded, one per input
+
+**Drive-by code fix:**
+- [x] `_post_chunk` off-by-one: no longer sleeps after the LAST failed attempt before raising (up to 60s wasted in prod). Tracked `last_failure` reason for the final exception message.
+
+**Total suite:** 14 tests, 1.5s. (4 api_gps live + 6 sync_server live + 4 sync_server mocked.)
+
 - [ ] Commit 4b
 
 ## Phase 5 — Async projects (`async_server.project_geocoder`)

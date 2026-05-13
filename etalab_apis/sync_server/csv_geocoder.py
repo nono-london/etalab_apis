@@ -115,8 +115,10 @@ class EtalabSyncCsvGeocoder:
         csv_payload, has_insee = _build_input_csv(chunk, mode)
         endpoint = "/search/csv" if mode == _MODE_FORWARD else "/reverse/csv"
         url = f"{self._base_url}{endpoint}"
+        last_failure = "no attempt made"
 
         for attempt in range(self._max_retries):
+            is_last = attempt + 1 == self._max_retries
             form = aiohttp.FormData()
             form.add_field(
                 "data",
@@ -135,12 +137,18 @@ class EtalabSyncCsvGeocoder:
                     return await resp.text()
                 if resp.status == 429:
                     wait = _retry_after_seconds(resp, default=5.0)
+                    last_failure = f"HTTP 429 (rate-limited, retry-after={wait:.1f}s)"
+                    if is_last:
+                        break
                     logger.warning("429 too many requests, sleeping %.1fs", wait)
                     await asyncio.sleep(wait)
                     continue
                 if 500 <= resp.status < 600:
-                    wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
                     body = await _safe_text(resp)
+                    last_failure = f"HTTP {resp.status}: {body[:500]}"
+                    if is_last:
+                        break
+                    wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
                     logger.warning(
                         "HTTP %s on %s (attempt %d/%d), backing off %ds: %s",
                         resp.status, endpoint, attempt + 1, self._max_retries, wait, body[:200],
@@ -150,7 +158,7 @@ class EtalabSyncCsvGeocoder:
                 body = await _safe_text(resp)
                 raise _PersistentBatchFailure(f"HTTP {resp.status}: {body[:500]}")
 
-        raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}")
+        raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}: {last_failure}")
 
 
 def _build_input_csv(chunk: List, mode: str) -> Tuple[bytes, bool]:

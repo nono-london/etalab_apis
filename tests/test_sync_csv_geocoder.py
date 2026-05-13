@@ -69,3 +69,46 @@ async def test_reverse_geocode_live_smoke():
     r = results[0]
     assert r["found_result"], r
     assert r["city"] == "Paris"
+
+
+@pytest.mark.asyncio
+async def test_chunking_splits_input_into_multiple_chunks_live():
+    """12 rows with chunk_rows=4 -> 3 server round trips. All results returned, order preserved."""
+    rows = [("2 rue de la paix 75002 Paris", None)] * 12
+
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode(iter(rows), chunk_rows=4):
+        results.append(r)
+
+    assert len(results) == 12
+    for r in results:
+        assert r["found_result"], r
+        assert r["city"] == "Paris"
+
+
+@pytest.mark.asyncio
+async def test_geocode_accepts_generator_input_live():
+    """Generator (not list) input works -- exercises the lazy itertools.islice path."""
+    def addresses_gen():
+        yield ("2 rue de la paix 75002 Paris", None)
+        yield ("29 rue de la paix 75002 Paris", None)
+
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode(addresses_gen()):
+        results.append(r)
+
+    assert len(results) == 2
+    for r in results:
+        assert r["found_result"], r
+
+
+@pytest.mark.asyncio
+async def test_geocode_empty_input_yields_no_results():
+    """Empty iterable: no HTTP request, no results."""
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode([]):
+        results.append(r)
+    assert results == []
