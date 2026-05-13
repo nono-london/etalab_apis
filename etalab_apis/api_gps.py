@@ -34,19 +34,31 @@ class EtalabGpsApi:
             async with aiohttp.ClientSession() as s:
                 yield s
 
-    def _build_search_url(
+    def _build_search_request(
         self,
         postal_address: str,
         insee_city_code: Optional[str] = None,
         limit: int = 1,
-    ) -> str:
-        params = [f"q={postal_address}", "index=address", f"limit={limit}"]
+    ) -> Tuple[str, Dict[str, str]]:
+        params: Dict[str, str] = {
+            "q": postal_address,
+            "index": "address",
+            "limit": str(limit),
+        }
         if insee_city_code:
-            params.insert(1, f"citycode={insee_city_code}")
-        return f"{self._base_url}/search?" + "&".join(params)
+            params["citycode"] = insee_city_code
+        return f"{self._base_url}/search", params
 
-    def _build_reverse_url(self, lng: float, lat: float, limit: int = 1) -> str:
-        return f"{self._base_url}/reverse?lon={lng}&lat={lat}&index=address&limit={limit}"
+    def _build_reverse_request(
+        self, lng: float, lat: float, limit: int = 1
+    ) -> Tuple[str, Dict[str, str]]:
+        params: Dict[str, str] = {
+            "lon": str(lng),
+            "lat": str(lat),
+            "index": "address",
+            "limit": str(limit),
+        }
+        return f"{self._base_url}/reverse", params
 
     @staticmethod
     def _read_json_response(json_response: dict) -> Optional[Dict]:
@@ -85,11 +97,11 @@ class EtalabGpsApi:
         if len(postal_address) < 4:
             return {"found_result": False, "postal_address": postal_address}
         postal_address = postal_address[:200]
-        url = self._build_search_url(postal_address, insee_city_code, limit)
+        url, params = self._build_search_request(postal_address, insee_city_code, limit)
 
         result: Optional[Dict] = None
         async with self._session_for(session) as s:
-            async with s.get(url) as response:
+            async with s.get(url, params=params) as response:
                 if response.status == 200:
                     try:
                         json_response = await response.json()
@@ -149,9 +161,9 @@ class EtalabGpsApi:
         if lng is None or lat is None:
             return None
 
-        url = self._build_reverse_url(lng, lat, limit)
+        url, params = self._build_reverse_request(lng, lat, limit)
         async with self._session_for(session) as s:
-            async with s.get(url) as response:
+            async with s.get(url, params=params) as response:
                 if response.status == 200:
                     try:
                         json_response = await response.json()
