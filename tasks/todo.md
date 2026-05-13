@@ -17,14 +17,15 @@
 
 ## Phase 1 — API research doc (no code risk)
 - [x] Create `api_doc.md` at repo root with: URL migration notice, base URL, all 5 endpoint groups, full param tables, multipart fields, async project workflow, rate limits + file/row caps, auth schemes, response shapes, error-code cheatsheet, practical notes for the wrapper
-- [ ] Commit phase-1: `docs: capture Géoplateforme research in api_doc.md`
+- [x] Commit phase-1 (`f951a92`)
 
 ## Phase 2 — Package skeleton
-- [ ] Create `etalab_apis/sync_server/__init__.py` (empty)
-- [ ] Create `etalab_apis/sync_server/csv_geocoder.py` with class stub `EtalabSyncCsvGeocoder` + docstring + method signatures + `NotImplementedError`
-- [ ] Create `etalab_apis/async_server/__init__.py` (empty)
-- [ ] Create `etalab_apis/async_server/project_geocoder.py` with class stub `EtalabAsyncProjectGeocoder` + signatures + `NotImplementedError`
-- [ ] Commit phase-2: `feat: scaffold sync_server and async_server packages`
+- [x] Create `etalab_apis/sync_server/__init__.py` (empty)
+- [x] Create `etalab_apis/sync_server/csv_geocoder.py` with class stub `EtalabSyncCsvGeocoder`
+- [x] Create `etalab_apis/async_server/__init__.py` (empty)
+- [x] Create `etalab_apis/async_server/project_geocoder.py` with class stub `EtalabAsyncProjectGeocoder`
+- [x] Verify both stubs import cleanly
+- [ ] Commit phase-2
 
 ## Phase 3 — Migrate `api_gps.py` (unitary GET, behaviour-preserving)
 - [ ] Switch base URL to `https://data.geopf.fr/geocodage/search` and `/reverse`
