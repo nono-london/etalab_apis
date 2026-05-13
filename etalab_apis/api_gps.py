@@ -1,157 +1,178 @@
 import asyncio
-from math import ceil
+import contextlib
+import logging
 from time import time
-from typing import (Union, Dict,
-                    Optional, List, Tuple)
+from typing import Dict, List, Optional, Tuple, Union
 
 import aiohttp
-import numpy as np
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+GEOPF_BASE_URL = "https://data.geopf.fr/geocodage"
+DEFAULT_MAX_CONCURRENT = 20
 
 
 class EtalabGpsApi:
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        session: Optional[aiohttp.ClientSession] = None,
+        base_url: str = GEOPF_BASE_URL,
+        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+    ):
+        self._session = session
+        self._base_url = base_url.rstrip("/")
+        self._max_concurrent = max_concurrent
 
-    @staticmethod
-    async def _build_url(postal_address: str, insee_city_code: Optional[str] = None, limit: int = 1) -> str:
-        """Use French gov API: https://api-adresse.data.gouv.fr/search/?q=8+bd+du+port&limit=1"""
-        if insee_city_code:
-            url = f"https://api-adresse.data.gouv.fr/search/?q={postal_address}&citycode={insee_city_code}&limit={limit}"
+    @contextlib.asynccontextmanager
+    async def _session_for(self, session: Optional[aiohttp.ClientSession]):
+        if session is not None:
+            yield session
+        elif self._session is not None:
+            yield self._session
         else:
-            url = f"https://api-adresse.data.gouv.fr/search/?q={postal_address}&limit={limit}"
-        return url
+            async with aiohttp.ClientSession() as s:
+                yield s
+
+    def _build_search_url(
+        self,
+        postal_address: str,
+        insee_city_code: Optional[str] = None,
+        limit: int = 1,
+    ) -> str:
+        params = [f"q={postal_address}", "index=address", f"limit={limit}"]
+        if insee_city_code:
+            params.insert(1, f"citycode={insee_city_code}")
+        return f"{self._base_url}/search?" + "&".join(params)
+
+    def _build_reverse_url(self, lng: float, lat: float, limit: int = 1) -> str:
+        return f"{self._base_url}/reverse?lon={lng}&lat={lat}&index=address&limit={limit}"
 
     @staticmethod
-    async def _read_json_response(json_response: dict) -> Union[Dict, None]:
-        json_response = json_response.get("features")
-        if json_response is None or len(json_response) == 0:
+    def _read_json_response(json_response: dict) -> Optional[Dict]:
+        features = json_response.get("features")
+        if not features:
             return None
-
-        gps = json_response[0].get("geometry").get("coordinates")  # (LNG, LAT)
-        if gps is None:
+        feature = features[0]
+        coords = feature.get("geometry", {}).get("coordinates")
+        if not coords:
             return None
+        props = feature.get("properties", {})
+        return {
+            "gps": tuple(coords),
+            "lng": coords[0],
+            "lat": coords[1],
+            "postcode": props.get("postcode"),
+            "insee_city_code": props.get("citycode"),
+            "city": props.get("city"),
+            "postal_address": props.get("label"),
+        }
 
-        if isinstance(gps, list):
-            gps = tuple(gps)
-        postcode = json_response[0].get("properties").get("postcode")
-        insee_city_code = json_response[0].get("properties").get("citycode")
-        city = json_response[0].get("properties").get("city")
-        postal_address = json_response[0].get("properties").get("label")
-        gps_dict = {'gps': gps, "postcode": postcode, "insee_city_code": insee_city_code, "city": city,
-                    'postal_address': postal_address,
-                    'lat': gps[1], 'lng': gps[0]
-                    }
+    @staticmethod
+    async def _safe_text(response: aiohttp.ClientResponse) -> str:
+        try:
+            return await response.text()
+        except Exception:
+            return "<unreadable body>"
 
-        return gps_dict
-
-    async def get_gps_coordinates(self, postal_address: str, insee_city_code: Optional[str] = None, limit: int = 1) -> \
-            Union[Dict]:
-        result: Union[Dict, None] = None
-
-        # check that address has between 3 and 200 chars
+    async def get_gps_coordinates(
+        self,
+        postal_address: str,
+        insee_city_code: Optional[str] = None,
+        limit: int = 1,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> Dict:
         if len(postal_address) < 4:
-            result['found_result'] = True
-            result['postal_address'] = postal_address
+            return {"found_result": False, "postal_address": postal_address}
         postal_address = postal_address[:200]
+        url = self._build_search_url(postal_address, insee_city_code, limit)
 
-        url: str = await self._build_url(postal_address=postal_address, insee_city_code=insee_city_code, limit=limit)
-
-        # mysql_connection = aiohttp.TCPConnector(limit=5)
-        # mysql_connection=mysql_connection
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url=url, ) as response:
+        result: Optional[Dict] = None
+        async with self._session_for(session) as s:
+            async with s.get(url) as response:
                 if response.status == 200:
                     try:
                         json_response = await response.json()
-                        result = await self._read_json_response(json_response=json_response)
-                    except Exception as ex:
-                        print("Json error:", ex)
-
+                        result = self._read_json_response(json_response)
+                    except Exception:
+                        logger.exception("failed to parse JSON for %s", postal_address)
                 elif response.status == 504:
-                    # request is taking too long
-                    pass
+                    logger.warning("504 timeout for %s", postal_address)
                 else:
-                    print(f"Error status: {response.status}")
-                    try:
-                        print(f"Message text: {await response.text()}")
-                    except Exception as ex:
-                        pass
+                    body = await self._safe_text(response)
+                    logger.error("HTTP %s for %s: %s", response.status, postal_address, body)
 
-                await asyncio.sleep(0.1)
-
-        if result is not None:
-            result['found_result'] = True
-            result['postal_address'] = postal_address
-        else:
-            result = {'found_result': False, 'postal_address': postal_address}
-
+        if result is None:
+            return {"found_result": False, "postal_address": postal_address}
+        result["found_result"] = True
         return result
 
-    async def batch_gps_coordinates(self, postal_addresses: Optional[List] = None,
-                                    addresses_insees: Optional[List[Tuple]] = None) -> List:
-        """
-        Get gps coordinates from a list of addresses or a list of address, commune INSEE code tuples
-        :param postal_addresses: a list of addresses
-        :param addresses_insees: a list of tuples with [0] being the postal address and [1] being the insse code
-        :return: a list of gps/city... dicts that contain the postal_address key being the one used in the query
-        """
-        max_calls: int = 5
+    async def batch_gps_coordinates(
+        self,
+        postal_addresses: Optional[List[str]] = None,
+        addresses_insees: Optional[List[Tuple[str, Optional[str]]]] = None,
+    ) -> List[Dict]:
         if postal_addresses:
-            addresses_splits = list(np.array_split(postal_addresses, ceil(len(postal_addresses) / max_calls)))
+            items: List[Tuple[str, Optional[str]]] = [(addr, None) for addr in postal_addresses]
+        elif addresses_insees:
+            items = list(addresses_insees)
         else:
-            addresses_splits = list(np.array_split(addresses_insees, ceil(len(addresses_insees) / max_calls)))
+            return []
 
-        results = []
-        for addresses_split in tqdm(addresses_splits):
-            if postal_addresses:
-                tasks = [asyncio.create_task(self.get_gps_coordinates(postal_address=postal_address))
-                         for postal_address in addresses_split]
-            else:
-                tasks = [asyncio.create_task(self.get_gps_coordinates(postal_address=postal_address[0],
-                                                                      insee_city_code=postal_address[1])
-                                             ) for postal_address in addresses_split]
-            result = await asyncio.gather(*tasks)
-            await asyncio.sleep(0.1)
-            results.extend(result)
+        sem = asyncio.Semaphore(self._max_concurrent)
+        pbar = tqdm(total=len(items))
 
-        return results
+        async def bounded(s: aiohttp.ClientSession, addr: str, insee: Optional[str]) -> Dict:
+            async with sem:
+                try:
+                    return await self.get_gps_coordinates(addr, insee, session=s)
+                finally:
+                    pbar.update(1)
 
-    async def get_address_from_gps(self, gps_long_lat: Union[Dict, Tuple],
-                                   limit: int = 1) -> Union[None, Dict]:
-        """Use French gov API: https://api-adresse.data.gouv.fr/reverse/?lon=${longitude}&lat=${latitude}"""
+        async with self._session_for(None) as session:
+            try:
+                return await asyncio.gather(*(bounded(session, a, i) for a, i in items))
+            finally:
+                pbar.close()
 
-        long, lat = None, None
+    async def get_address_from_gps(
+        self,
+        gps_long_lat: Union[Dict, Tuple],
+        limit: int = 1,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> Optional[Dict]:
         if isinstance(gps_long_lat, dict):
-            long = gps_long_lat['long']
-            lat = gps_long_lat['lat']
-        if isinstance(gps_long_lat, tuple):
-            long = gps_long_lat[0]
-            lat = gps_long_lat[1]
-        if not long or not lat:
+            lng = gps_long_lat["lng"]
+            lat = gps_long_lat["lat"]
+        else:
+            lng, lat = gps_long_lat[0], gps_long_lat[1]
+        if lng is None or lat is None:
             return None
 
-        url: str = f"""https://api-adresse.data.gouv.fr/reverse/?lon={long}&lat={lat}"""
-        result = None
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url=url, ) as response:
+        url = self._build_reverse_url(lng, lat, limit)
+        async with self._session_for(session) as s:
+            async with s.get(url) as response:
                 if response.status == 200:
-                    json_response = await response.json()
-                    result = await self._read_json_response(json_response=json_response)
-                else:
-                    print(f"Error status: {response.status}\n"
-                          f"Message: {await response.json()}")
-                await asyncio.sleep(0.1)
+                    try:
+                        json_response = await response.json()
+                        return self._read_json_response(json_response)
+                    except Exception:
+                        logger.exception("failed to parse JSON on reverse (%s, %s)", lng, lat)
+                        return None
+                body = await self._safe_text(response)
+                logger.error("HTTP %s on reverse (%s, %s): %s", response.status, lng, lat, body)
+                return None
 
-            return result
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     start = time()
 
-    my_postal_addresses: list = [("VILLARS LES DOMBES", "01443"),
-                                 ("DIVONNE LES BAINS", "01143"),
-                                 ("YZEURE", "03400")]
+    my_postal_addresses = [
+        ("VILLARS LES DOMBES", "01443"),
+        ("DIVONNE LES BAINS", "01143"),
+        ("YZEURE", "03400"),
+    ]
 
     dvf_api = EtalabGpsApi()
     try:
@@ -160,8 +181,7 @@ if __name__ == '__main__':
         postal_address = "1 FOND DE BOSSART 08460 NEUFMAISON"
         gps_datas = asyncio.run(dvf_api.get_gps_coordinates(postal_address=postal_address))
         print(gps_datas)
-
     except Exception as e:
         print(e)
 
-    print(f'App ran in {round(time() - start, 3)} seconds')
+    print(f"App ran in {round(time() - start, 3)} seconds")

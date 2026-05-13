@@ -25,19 +25,22 @@
 - [x] Create `etalab_apis/async_server/__init__.py` (empty)
 - [x] Create `etalab_apis/async_server/project_geocoder.py` with class stub `EtalabAsyncProjectGeocoder`
 - [x] Verify both stubs import cleanly
-- [ ] Commit phase-2
+- [x] Commit phase-2 (`1012866`)
 
 ## Phase 3 — Migrate `api_gps.py` (unitary GET, behaviour-preserving)
-- [ ] Switch base URL to `https://data.geopf.fr/geocodage/search` and `/reverse`
-- [ ] Append `index=address` to every search query (keeps current address-only behaviour)
-- [ ] Fix `len(postal_address) < 4` bug: assign the "not found" dict and `return` it, skip the HTTP call
-- [ ] Fix `get_address_from_gps`: `'long'` → `'lng'` (note: this is a public-surface key change — call out in commit msg)
-- [ ] Harden `get_address_from_gps` non-200 path (don't call `.json()` blindly)
-- [ ] Replace `print()` calls with module-level `logging.getLogger(__name__)` + `logger.error/warning`
-- [ ] Refactor `batch_gps_coordinates`: accept optional shared `aiohttp.ClientSession`, use `asyncio.Semaphore(40)` instead of `np.array_split` chunking, drop the post-call `sleep`
-- [ ] Drop `numpy` import + the `from math import ceil`
-- [ ] Re-run live integration tests in `tests/test_api_gps.py` — assert they still pass against the new URL
-- [ ] Commit phase-3: `refactor: migrate api_gps to data.geopf.fr + fix short-address bug + lng key`
+- [x] Switch base URL to `https://data.geopf.fr/geocodage/search` and `/reverse`, `index=address` on both
+- [x] Fix `len(postal_address) < 4` bug — early return, no HTTP call
+- [x] `get_address_from_gps`: `'long'` → `'lng'` (KeyError on stale callers, per user direction)
+- [x] Harden reverse non-200 path: `_safe_text()` helper, no blind `.json()`
+- [x] `print()` → `logging.getLogger(__name__)` + `info/warning/error/exception`
+- [x] `batch_gps_coordinates` refactor: shared `ClientSession`, `asyncio.Semaphore(20)`, `asyncio.gather` for order, tqdm via `pbar.update()` in the bounded coroutine
+- [x] Drop `numpy` import + `from math import ceil`
+- [x] Ctor extended (back-compat): optional `session`, `base_url`, `max_concurrent`
+- [x] `_read_json_response` becomes sync (it had no awaits)
+- [x] `_session_for()` async-context-manager helper
+- [x] All 4 collected pytest tests pass against new URL; `__main__` demo verified live
+- [x] Flag pre-existing duplicate `test_batch_gps_coordinates_with_insee` name (out of scope)
+- [ ] Commit phase-3
 
 ## Phase 4 — Sync CSV batch (`sync_server.csv_geocoder`)
 - [ ] Implement `EtalabSyncCsvGeocoder` with:
