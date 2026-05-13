@@ -4,9 +4,6 @@ tqdm
 # webscrap
 aiohttp
 
-# stat
-numpy
-
 
 ## test commands
 # python manage.py test --verbosity=2
