@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etalab_apis"
+version = "0.0.0.10"
+description = "Async wrapper around the French Géoplateforme geocoding API (data.geopf.fr/geocodage)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Nono London" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "aiohttp",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "aioresponses",
+]
+
+[project.urls]
+Homepage = "https://github.com/nono-london/etalab_apis"
+
+[tool.setuptools.packages.find]
+include = ["etalab_apis*"]
