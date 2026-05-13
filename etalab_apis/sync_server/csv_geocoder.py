@@ -8,13 +8,14 @@ from typing import AsyncIterator, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
 
+from etalab_apis.utils.http import MAX_BACKOFF_SECONDS, retry_after_seconds, safe_text
+
 logger = logging.getLogger(__name__)
 
 GEOPF_BASE_URL = "https://data.geopf.fr/geocodage"
 MAX_ROWS_PER_BATCH = 200_000
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MIN_SUBDIVIDE_ROWS = 100
-MAX_BACKOFF_SECONDS = 60
 
 _MODE_FORWARD = "forward"
 _MODE_REVERSE = "reverse"
@@ -136,7 +137,7 @@ class EtalabSyncCsvGeocoder:
                 if resp.status == 200:
                     return await resp.text()
                 if resp.status == 429:
-                    wait = _retry_after_seconds(resp, default=5.0)
+                    wait = retry_after_seconds(resp, default=5.0)
                     last_failure = f"HTTP 429 (rate-limited, retry-after={wait:.1f}s)"
                     if is_last:
                         break
@@ -144,7 +145,7 @@ class EtalabSyncCsvGeocoder:
                     await asyncio.sleep(wait)
                     continue
                 if 500 <= resp.status < 600:
-                    body = await _safe_text(resp)
+                    body = await safe_text(resp)
                     last_failure = f"HTTP {resp.status}: {body[:500]}"
                     if is_last:
                         break
@@ -155,7 +156,7 @@ class EtalabSyncCsvGeocoder:
                     )
                     await asyncio.sleep(wait)
                     continue
-                body = await _safe_text(resp)
+                body = await safe_text(resp)
                 raise _PersistentBatchFailure(f"HTTP {resp.status}: {body[:500]}")
 
         raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}: {last_failure}")
@@ -247,20 +248,3 @@ def _to_float(s: Optional[str]) -> Optional[float]:
         return float(s)
     except ValueError:
         return None
-
-
-def _retry_after_seconds(response: aiohttp.ClientResponse, default: float) -> float:
-    raw = response.headers.get("retry-after")
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
-async def _safe_text(response: aiohttp.ClientResponse) -> str:
-    try:
-        return await response.text()
-    except Exception:
-        return "<unreadable body>"

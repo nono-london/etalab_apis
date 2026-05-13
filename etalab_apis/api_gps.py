@@ -7,10 +7,13 @@ from typing import Dict, List, Optional, Tuple, Union
 import aiohttp
 from tqdm import tqdm
 
+from etalab_apis.utils.http import MAX_BACKOFF_SECONDS, retry_after_seconds, safe_text
+
 logger = logging.getLogger(__name__)
 
 GEOPF_BASE_URL = "https://data.geopf.fr/geocodage"
 DEFAULT_MAX_CONCURRENT = 20
+DEFAULT_MAX_RETRIES = 5
 
 
 class EtalabGpsApi:
@@ -19,10 +22,12 @@ class EtalabGpsApi:
         session: Optional[aiohttp.ClientSession] = None,
         base_url: str = GEOPF_BASE_URL,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ):
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._max_concurrent = max_concurrent
+        self._max_retries = max_retries
 
     @contextlib.asynccontextmanager
     async def _session_for(self, session: Optional[aiohttp.ClientSession]):
@@ -80,12 +85,55 @@ class EtalabGpsApi:
             "postal_address": props.get("label"),
         }
 
-    @staticmethod
-    async def _safe_text(response: aiohttp.ClientResponse) -> str:
-        try:
-            return await response.text()
-        except Exception:
-            return "<unreadable body>"
+    async def _get_json_with_retry(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        params: Dict[str, str],
+        ctx: str,
+    ) -> Optional[Dict]:
+        """GET url with retry on 429/5xx. Returns parsed JSON dict, or None on terminal failure.
+
+        Retries:
+        - 429: honors retry-after header, retries until exhaustion.
+        - 5xx / 504: exponential backoff capped at MAX_BACKOFF_SECONDS, retries until exhaustion.
+        - 4xx-non-429: no retry, logs and returns None.
+        - JSON parse failure on 200: logs and returns None.
+        """
+        for attempt in range(self._max_retries):
+            is_last = attempt + 1 == self._max_retries
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    try:
+                        return await response.json()
+                    except Exception:
+                        logger.exception("failed to parse JSON for %s", ctx)
+                        return None
+                if response.status == 429:
+                    wait = retry_after_seconds(response, default=5.0)
+                    if is_last:
+                        logger.error("429 rate-limited for %s, retries exhausted", ctx)
+                        return None
+                    logger.warning("429 for %s, sleeping %.1fs", ctx, wait)
+                    await asyncio.sleep(wait)
+                    continue
+                if response.status == 504 or 500 <= response.status < 600:
+                    if is_last:
+                        logger.error(
+                            "HTTP %s for %s, retries exhausted", response.status, ctx
+                        )
+                        return None
+                    wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
+                    logger.warning(
+                        "HTTP %s for %s (attempt %d/%d), backing off %ds",
+                        response.status, ctx, attempt + 1, self._max_retries, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                body = await safe_text(response)
+                logger.error("HTTP %s for %s: %s", response.status, ctx, body)
+                return None
+        return None
 
     async def get_gps_coordinates(
         self,
@@ -99,21 +147,10 @@ class EtalabGpsApi:
         postal_address = postal_address[:200]
         url, params = self._build_search_request(postal_address, insee_city_code, limit)
 
-        result: Optional[Dict] = None
         async with self._session_for(session) as s:
-            async with s.get(url, params=params) as response:
-                if response.status == 200:
-                    try:
-                        json_response = await response.json()
-                        result = self._read_json_response(json_response)
-                    except Exception:
-                        logger.exception("failed to parse JSON for %s", postal_address)
-                elif response.status == 504:
-                    logger.warning("504 timeout for %s", postal_address)
-                else:
-                    body = await self._safe_text(response)
-                    logger.error("HTTP %s for %s: %s", response.status, postal_address, body)
+            json_response = await self._get_json_with_retry(s, url, params, postal_address)
 
+        result = self._read_json_response(json_response) if json_response is not None else None
         if result is None:
             return {"found_result": False, "postal_address": postal_address}
         result["found_result"] = True
@@ -162,18 +199,12 @@ class EtalabGpsApi:
             return None
 
         url, params = self._build_reverse_request(lng, lat, limit)
+        ctx = f"reverse ({lng}, {lat})"
         async with self._session_for(session) as s:
-            async with s.get(url, params=params) as response:
-                if response.status == 200:
-                    try:
-                        json_response = await response.json()
-                        return self._read_json_response(json_response)
-                    except Exception:
-                        logger.exception("failed to parse JSON on reverse (%s, %s)", lng, lat)
-                        return None
-                body = await self._safe_text(response)
-                logger.error("HTTP %s on reverse (%s, %s): %s", response.status, lng, lat, body)
-                return None
+            json_response = await self._get_json_with_retry(s, url, params, ctx)
+        if json_response is None:
+            return None
+        return self._read_json_response(json_response)
 
 
 if __name__ == "__main__":
