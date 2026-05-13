@@ -8,3 +8,6 @@ __pycache__
 
 .playwright-mcp/
 
+/.claude/
+CLAUDE.md
+tasks/
