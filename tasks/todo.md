@@ -40,18 +40,32 @@
 - [x] `_session_for()` async-context-manager helper
 - [x] All 4 collected pytest tests pass against new URL; `__main__` demo verified live
 - [x] Flag pre-existing duplicate `test_batch_gps_coordinates_with_insee` name (out of scope)
-- [ ] Commit phase-3
+- [x] Commit phase-3 (`0a4c400`)
 
 ## Phase 4 — Sync CSV batch (`sync_server.csv_geocoder`)
-- [ ] Implement `EtalabSyncCsvGeocoder` with:
-  - Ctor: `session: ClientSession | None`, `base_url`, `max_concurrent_batches` (chunks can run in parallel within rate limit)
-  - `geocode(rows: Iterable[Tuple[str, str | None]], chunk_rows: int = 200_000) -> AsyncIterator[Dict]`
-  - Internal: build CSV in-memory per chunk (StringIO), `POST /search/csv` with multipart, parse `text/csv` response, yield rows mapped to the same `{gps, lat, lng, postcode, insee_city_code, city, postal_address, found_result}` shape as unitary
-  - Retry: exponential backoff on 429 / 5xx, honor `retry-after`
-  - Sub-divide: on persistent failure, halve the chunk and retry each half (recursive, with a minimum chunk size)
-- [ ] Implement `reverse_geocode(rows: Iterable[Tuple[float, float]], ...)` (POST /reverse/csv) — symmetric
-- [ ] Add unit tests `tests/test_sync_csv_geocoder.py` using `aioresponses` (mocked HTTP — no live calls in this phase's tests; live tests live separately)
-- [ ] Commit phase-4: `feat(sync_server): bulk CSV geocoder (POST /search/csv & /reverse/csv)`
+
+### 4a — implementation + live smoke test
+- [x] `EtalabSyncCsvGeocoder.geocode(rows, chunk_rows=200_000)` — async generator, lazy input via `itertools.islice`
+- [x] `EtalabSyncCsvGeocoder.reverse_geocode(rows, chunk_rows=200_000)` — symmetric
+- [x] CSV builder (`_build_input_csv`) — handles forward (`address,citycode` or `address` only) + reverse (`lon,lat`); `csv.writer` for proper escaping
+- [x] CSV parser (`_parse_response_csv` → `_row_to_result`) — maps `result_*` columns to the canonical dict shape (same keys as `api_gps`), plus `result_status` ∈ `{ok, not-found, skipped, error}`
+- [x] Multipart POST with `aiohttp.FormData` rebuilt per retry attempt
+- [x] Retry: 429 honors `retry-after`, 5xx exponential backoff (cap 60s), 4xx-non-429 raises
+- [x] Persistent failure → subdivide chunk in half; at `min_subdivide_rows` give up and yield `result_status="error"` rows
+- [x] 3 live smoke tests in `tests/test_sync_csv_geocoder.py` (forward, forward+INSEE, reverse) — all pass
+- [x] Full suite (4 old + 3 new) all pass in 2s
+- [ ] Commit 4a
+
+### 4b — full mocked unit tests
+- [ ] `aiohttp` mocking via `aioresponses` (add to requirements-dev or test-only)
+- [ ] Test chunking: 250 rows with chunk_rows=100 → 3 chunks → 3 POSTs
+- [ ] Test 429 retry: mock 429 with `retry-after: 1`, then 200 → exactly one sleep, second POST succeeds
+- [ ] Test 5xx backoff: mock 500 ×2, then 200 → 2 backoff sleeps, third POST succeeds
+- [ ] Test 4xx non-429: mock 400 → `_PersistentBatchFailure` → subdivide → if min already, error rows yielded
+- [ ] Test subdivide: mock 500 persistently on chunk size 200, then 200 on each half of 100 → 2 successful sub-POSTs, results in order
+- [ ] Test giving up at min_subdivide_rows: mock 500 persistently → `result_status="error"` row per input row, count matches
+- [ ] Test result_status mapping: `ok`/`not-found`/`skipped`/`error` from mocked response CSV → correct dict shape
+- [ ] Commit 4b
 
 ## Phase 5 — Async projects (`async_server.project_geocoder`)
 - [ ] Implement `EtalabAsyncProjectGeocoder` with:
