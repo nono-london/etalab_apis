@@ -17,14 +17,17 @@ SEARCH_CSV_URL = "https://data.geopf.fr/geocodage/search/csv"
 
 OK_HEADER = (
     "address,result_status,result_label,result_city,"
-    "result_postcode,result_citycode,latitude,longitude"
+    "result_postcode,result_citycode,result_score,result_score_next,"
+    "latitude,longitude"
 )
 
 
 def _ok_body(addresses: List[str]) -> str:
     lines = [OK_HEADER]
     for addr in addresses:
-        lines.append(f"{addr},ok,{addr} (matched),Paris,75002,75102,48.86,2.33")
+        lines.append(
+            f"{addr},ok,{addr} (matched),Paris,75002,75102,0.95,0.42,48.86,2.33"
+        )
     return "\n".join(lines) + "\n"
 
 

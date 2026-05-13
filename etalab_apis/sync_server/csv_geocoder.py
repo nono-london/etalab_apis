@@ -203,6 +203,8 @@ def _row_to_result(row: Dict[str, str], mode: str) -> Dict:
                 "insee_city_code": row.get("result_citycode") or None,
                 "city": row.get("result_city") or None,
                 "postal_address": row.get("result_label") or row.get("address"),
+                "result_score": _to_float(row.get("result_score")),
+                "result_score_next": _to_float(row.get("result_score_next")),
                 "found_result": True,
                 "result_status": status,
             }
@@ -222,6 +224,8 @@ def _row_to_result(row: Dict[str, str], mode: str) -> Dict:
             "insee_city_code": row.get("result_citycode") or None,
             "city": row.get("result_city") or None,
             "postal_address": row.get("result_label"),
+            "result_score": _to_float(row.get("result_score")),
+            "result_score_next": _to_float(row.get("result_score_next")),
             "found_result": True,
             "result_status": status,
         }
@@ -248,3 +252,5 @@ def _to_float(s: Optional[str]) -> Optional[float]:
         return float(s)
     except ValueError:
         return None
+
+

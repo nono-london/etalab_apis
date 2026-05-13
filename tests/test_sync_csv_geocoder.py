@@ -29,6 +29,8 @@ async def test_geocode_live_smoke():
         assert isinstance(r["lat"], float)
         assert isinstance(r["lng"], float)
         assert r["result_status"] == "ok"
+        assert isinstance(r["result_score"], float)
+        assert 0.0 <= r["result_score"] <= 1.0
 
     not_found = [r for r in results if not r["found_result"]]
     assert len(not_found) >= 1
