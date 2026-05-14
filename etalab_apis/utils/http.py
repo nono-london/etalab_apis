@@ -27,13 +27,14 @@ async def safe_text(response: aiohttp.ClientResponse) -> str:
 async def session_for(
     provided: aiohttp.ClientSession | None,
     fallback: aiohttp.ClientSession | None,
+    timeout: aiohttp.ClientTimeout | None = None,
 ):
     if provided is not None:
         yield provided
     elif fallback is not None:
         yield fallback
     else:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(timeout=timeout) as s:
             yield s
 
 

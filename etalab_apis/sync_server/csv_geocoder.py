@@ -3,7 +3,7 @@ import csv
 import io
 import itertools
 import logging
-from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 
 import aiohttp
 
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_ROWS_PER_BATCH = 200_000
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MIN_SUBDIVIDE_ROWS = 100
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(sock_read=60)
 
 _MODE_FORWARD = "forward"
 _MODE_REVERSE = "reverse"
@@ -43,18 +44,20 @@ class EtalabSyncCsvGeocoder:
         base_url: str = GEOPF_BASE_URL,
         max_retries: int = DEFAULT_MAX_RETRIES,
         min_subdivide_rows: int = DEFAULT_MIN_SUBDIVIDE_ROWS,
+        timeout: aiohttp.ClientTimeout = DEFAULT_TIMEOUT,
     ):
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._max_retries = max_retries
         self._min_subdivide_rows = min_subdivide_rows
+        self._timeout = timeout
 
     async def geocode(
         self,
         rows: Iterable[tuple],
         chunk_rows: int = MAX_ROWS_PER_BATCH,
     ) -> AsyncIterator[dict]:
-        async with session_for(None, self._session) as s:
+        async with session_for(None, self._session, self._timeout) as s:
             iterator = (normalize_forward_tuple(r) for r in rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
@@ -85,7 +88,7 @@ class EtalabSyncCsvGeocoder:
         """
         if not match_columns:
             raise ValueError("match_columns must name at least one CSV column")
-        async with session_for(None, self._session) as s:
+        async with session_for(None, self._session, self._timeout) as s:
             iterator = (dict(r) for r in rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
@@ -101,7 +104,7 @@ class EtalabSyncCsvGeocoder:
         rows: Iterable[tuple[float, float]],
         chunk_rows: int = MAX_ROWS_PER_BATCH,
     ) -> AsyncIterator[dict]:
-        async with session_for(None, self._session) as s:
+        async with session_for(None, self._session, self._timeout) as s:
             iterator = iter(rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
@@ -325,8 +328,16 @@ def _row_to_result(row: dict[str, str], mode: str) -> dict:
                 "result_status": status,
             }
         return {
-            "found_result": False,
+            "gps": None,
+            "lng": None,
+            "lat": None,
+            "postcode": None,
+            "insee_city_code": None,
+            "city": None,
             "postal_address": row.get("address"),
+            "result_score": None,
+            "result_score_next": None,
+            "found_result": False,
             "result_status": status or "not-found",
         }
     if found:
@@ -345,20 +356,40 @@ def _row_to_result(row: dict[str, str], mode: str) -> dict:
             "found_result": True,
             "result_status": status,
         }
+    lng = _to_float(row.get("lon"))
+    lat = _to_float(row.get("lat"))
     return {
+        "gps": None,
+        "lng": lng,
+        "lat": lat,
+        "postcode": None,
+        "insee_city_code": None,
+        "city": None,
+        "postal_address": None,
+        "result_score": None,
+        "result_score_next": None,
         "found_result": False,
-        "lng": _to_float(row.get("lon")),
-        "lat": _to_float(row.get("lat")),
         "result_status": status or "not-found",
     }
 
 
 def _error_row(row, mode: str) -> dict:
     if mode == _MODE_FORWARD:
-        addr = row[0]
-        return {"found_result": False, "postal_address": addr, "result_status": "error"}
+        return {
+            "gps": None, "lng": None, "lat": None,
+            "postcode": None, "insee_city_code": None, "city": None,
+            "postal_address": row[0],
+            "result_score": None, "result_score_next": None,
+            "found_result": False, "result_status": "error",
+        }
     lng, lat = row
-    return {"found_result": False, "lng": lng, "lat": lat, "result_status": "error"}
+    return {
+        "gps": None, "lng": lng, "lat": lat,
+        "postcode": None, "insee_city_code": None, "city": None,
+        "postal_address": None,
+        "result_score": None, "result_score_next": None,
+        "found_result": False, "result_status": "error",
+    }
 
 
 def _to_float(s: str | None) -> float | None:
@@ -386,7 +417,7 @@ def _build_dict_csv(chunk: list[dict]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def _parse_dict_response_csv(csv_text: str) -> Iterable[dict]:
+def _parse_dict_response_csv(csv_text: str) -> Iterator[dict]:
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
         yield _dict_row_to_result(row)

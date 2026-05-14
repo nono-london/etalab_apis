@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONCURRENT = 20
 DEFAULT_MAX_RETRIES = 5
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class EtalabGpsApi:
@@ -28,11 +29,13 @@ class EtalabGpsApi:
         base_url: str = GEOPF_BASE_URL,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        timeout: aiohttp.ClientTimeout = DEFAULT_TIMEOUT,
     ):
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._max_concurrent = max_concurrent
         self._max_retries = max_retries
+        self._timeout = timeout
 
     def _build_search_request(
         self,
@@ -135,7 +138,7 @@ class EtalabGpsApi:
         postal_address = postal_address[:200]
         url, params = self._build_search_request(postal_address, insee_city_code, postcode, limit)
 
-        async with session_for(session, self._session) as s:
+        async with session_for(session, self._session, self._timeout) as s:
             json_response = await self._get_json_with_retry(s, url, params, postal_address)
 
         result = self._read_json_response(json_response) if json_response is not None else None
@@ -200,23 +203,23 @@ class EtalabGpsApi:
             return []
 
         sem = asyncio.Semaphore(self._max_concurrent)
-        pbar = tqdm(total=len(items))
 
-        async def bounded(
-            s: aiohttp.ClientSession,
-            addr: str,
-            insee: str | None,
-            postcode: str | None,
-        ) -> dict:
-            async with sem:
-                try:
-                    return await self.get_gps_coordinates(addr, insee, postcode=postcode, session=s)
-                finally:
-                    pbar.update(1)
+        async with session_for(None, self._session, self._timeout) as s:
+            pbar = tqdm(total=len(items))
 
-        async with session_for(None, self._session) as s:
+            async def bounded(
+                addr: str,
+                insee: str | None,
+                postcode: str | None,
+            ) -> dict:
+                async with sem:
+                    try:
+                        return await self.get_gps_coordinates(addr, insee, postcode=postcode, session=s)
+                    finally:
+                        pbar.update(1)
+
             try:
-                return list(await asyncio.gather(*(bounded(s, a, i, pc) for a, i, pc in items)))
+                return list(await asyncio.gather(*(bounded(a, i, pc) for a, i, pc in items)))
             finally:
                 pbar.close()
 
@@ -237,7 +240,7 @@ class EtalabGpsApi:
 
         url, params = self._build_reverse_request(lng, lat, limit)
         ctx = f"reverse ({lng}, {lat})"
-        async with session_for(session, self._session) as s:
+        async with session_for(session, self._session, self._timeout) as s:
             json_response = await self._get_json_with_retry(s, url, params, ctx)
         if json_response is None:
             return not_found
