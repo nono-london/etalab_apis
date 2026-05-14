@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_ROWS_PER_BATCH = 200_000
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MIN_SUBDIVIDE_ROWS = 100
-DEFAULT_TIMEOUT = aiohttp.ClientTimeout(sock_read=60)
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(sock_read=300)
 
 _MODE_FORWARD = "forward"
 _MODE_REVERSE = "reverse"
