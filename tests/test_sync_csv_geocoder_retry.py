@@ -5,7 +5,6 @@ return 429 or 5xx on demand without abusing it). Everything else is covered by
 the live smoke tests in test_sync_csv_geocoder.py.
 """
 
-from typing import List
 from unittest.mock import AsyncMock
 
 import aiohttp
@@ -23,7 +22,7 @@ OK_HEADER = (
 )
 
 
-def _ok_body(addresses: List[str]) -> str:
+def _ok_body(addresses: list[str]) -> str:
     lines = [OK_HEADER]
     for addr in addresses:
         lines.append(
@@ -177,3 +176,69 @@ async def test_giving_up_yields_error_rows(fake_sleep):
         assert r["found_result"] is False
         assert r["result_status"] == "error"
         assert r["postal_address"] == f"addr_{i}"
+
+
+# -- Dict-path (geocode_with_columns) equivalents -----------------------------
+
+OK_DICT_HEADER = (
+    "address,siret,result_status,result_label,result_city,"
+    "result_postcode,result_citycode,result_score,result_score_next,"
+    "latitude,longitude"
+)
+
+
+def _ok_dict_body(rows: list[dict]) -> str:
+    lines = [OK_DICT_HEADER]
+    for row in rows:
+        addr = row["address"]
+        siret = row.get("siret", "")
+        lines.append(
+            f"{addr},{siret},ok,{addr} (matched),Paris,75002,75102,0.95,0.42,48.86,2.33"
+        )
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.asyncio
+async def test_subdivide_on_persistent_failure_dict_path(fake_sleep):
+    """200-dict chunk hits 5x 500 -> halved 100/100 -> each half succeeds. Order preserved."""
+    rows = [{"address": f"addr_{i}", "siret": f"s{i}"} for i in range(200)]
+    first_half = [{"address": f"addr_{i}", "siret": f"s{i}"} for i in range(100)]
+    second_half = [{"address": f"addr_{i}", "siret": f"s{i}"} for i in range(100, 200)]
+
+    with aioresponses() as m:
+        for _ in range(5):
+            m.post(SEARCH_CSV_URL, status=500, body="boom")
+        m.post(SEARCH_CSV_URL, status=200, body=_ok_dict_body(first_half))
+        m.post(SEARCH_CSV_URL, status=200, body=_ok_dict_body(second_half))
+
+        geocoder = EtalabSyncCsvGeocoder(min_subdivide_rows=50)
+        results = [r async for r in geocoder.geocode_with_columns(rows)]
+
+    assert len(results) == 200
+    assert results[0]["address"] == "addr_0"
+    assert results[0]["siret"] == "s0"
+    assert results[99]["address"] == "addr_99"
+    assert results[100]["address"] == "addr_100"
+    assert results[199]["address"] == "addr_199"
+    for r in results:
+        assert r["found_result"] is True
+
+
+@pytest.mark.asyncio
+async def test_giving_up_yields_error_rows_dict_path(fake_sleep):
+    """Dict chunk at min_subdivide_rows -> persistent failure -> error rows with input echoed."""
+    rows = [{"address": f"addr_{i}", "siret": f"s{i}"} for i in range(10)]
+
+    with aioresponses() as m:
+        for _ in range(5):
+            m.post(SEARCH_CSV_URL, status=500, body="boom")
+
+        geocoder = EtalabSyncCsvGeocoder(min_subdivide_rows=10)
+        results = [r async for r in geocoder.geocode_with_columns(rows)]
+
+    assert len(results) == 10
+    for i, r in enumerate(results):
+        assert r["found_result"] is False
+        assert r["result_status"] == "error"
+        assert r["address"] == f"addr_{i}"
+        assert r["siret"] == f"s{i}"

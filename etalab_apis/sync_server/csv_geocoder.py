@@ -1,18 +1,23 @@
 import asyncio
-import contextlib
 import csv
 import io
 import itertools
 import logging
-from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Sequence
 
 import aiohttp
 
-from etalab_apis.utils.http import MAX_BACKOFF_SECONDS, retry_after_seconds, safe_text
+from etalab_apis.utils.http import (
+    GEOPF_BASE_URL,
+    MAX_BACKOFF_SECONDS,
+    normalize_forward_tuple,
+    retry_after_seconds,
+    safe_text,
+    session_for,
+)
 
 logger = logging.getLogger(__name__)
 
-GEOPF_BASE_URL = "https://data.geopf.fr/geocodage"
 MAX_ROWS_PER_BATCH = 200_000
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MIN_SUBDIVIDE_ROWS = 100
@@ -29,12 +34,12 @@ class EtalabSyncCsvGeocoder:
     """Bulk geocoder using POST /search/csv and /reverse/csv (synchronous batch mode).
 
     One HTTP request handles up to MAX_ROWS_PER_BATCH addresses; the server responds
-    with the input CSV plus appended result_* columns. See api_doc.md §4.
+    with the input CSV plus appended result_* columns. See api_doc.md S4.
     """
 
     def __init__(
         self,
-        session: Optional[aiohttp.ClientSession] = None,
+        session: aiohttp.ClientSession | None = None,
         base_url: str = GEOPF_BASE_URL,
         max_retries: int = DEFAULT_MAX_RETRIES,
         min_subdivide_rows: int = DEFAULT_MIN_SUBDIVIDE_ROWS,
@@ -44,44 +49,34 @@ class EtalabSyncCsvGeocoder:
         self._max_retries = max_retries
         self._min_subdivide_rows = min_subdivide_rows
 
-    @contextlib.asynccontextmanager
-    async def _session_for(self, session: Optional[aiohttp.ClientSession]):
-        if session is not None:
-            yield session
-        elif self._session is not None:
-            yield self._session
-        else:
-            async with aiohttp.ClientSession() as s:
-                yield s
-
     async def geocode(
         self,
-        rows: Iterable[Tuple],
+        rows: Iterable[tuple],
         chunk_rows: int = MAX_ROWS_PER_BATCH,
-    ) -> AsyncIterator[Dict]:
-        async with self._session_for(None) as session:
-            iterator = (_normalize_forward_row(r) for r in rows)
+    ) -> AsyncIterator[dict]:
+        async with session_for(None, self._session) as s:
+            iterator = (normalize_forward_tuple(r) for r in rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
                 if not chunk:
                     return
-                async for result in self._geocode_chunk(session, chunk, _MODE_FORWARD):
+                async for result in self._geocode_chunk(s, chunk, _MODE_FORWARD):
                     yield result
 
     async def geocode_with_columns(
         self,
         rows: Iterable[Mapping[str, Any]],
         match_columns: Sequence[str] = ("address",),
-        citycode_column: Optional[str] = None,
-        postcode_column: Optional[str] = None,
+        citycode_column: str | None = None,
+        postcode_column: str | None = None,
         chunk_rows: int = MAX_ROWS_PER_BATCH,
-    ) -> AsyncIterator[Dict]:
+    ) -> AsyncIterator[dict]:
         """Bulk forward-geocode rows with arbitrary passthrough columns.
 
         Each input row is a dict (or any Mapping). The server echoes every input
         column on the corresponding output row, so any column not named in
         match_columns/citycode_column/postcode_column is carried through
-        untouched — useful for join keys like `siret`.
+        untouched -- useful for join keys like `siret`.
 
         Yields dicts: every column from the response CSV (input passthrough +
         result_* fields from the server) plus parsed convenience fields:
@@ -90,37 +85,39 @@ class EtalabSyncCsvGeocoder:
         """
         if not match_columns:
             raise ValueError("match_columns must name at least one CSV column")
-        async with self._session_for(None) as session:
+        async with session_for(None, self._session) as s:
             iterator = (dict(r) for r in rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
                 if not chunk:
                     return
                 async for result in self._geocode_dict_chunk(
-                    session, chunk, match_columns, citycode_column, postcode_column,
+                    s, chunk, match_columns, citycode_column, postcode_column,
                 ):
                     yield result
 
     async def reverse_geocode(
         self,
-        rows: Iterable[Tuple[float, float]],
+        rows: Iterable[tuple[float, float]],
         chunk_rows: int = MAX_ROWS_PER_BATCH,
-    ) -> AsyncIterator[Dict]:
-        async with self._session_for(None) as session:
+    ) -> AsyncIterator[dict]:
+        async with session_for(None, self._session) as s:
             iterator = iter(rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
                 if not chunk:
                     return
-                async for result in self._geocode_chunk(session, chunk, _MODE_REVERSE):
+                async for result in self._geocode_chunk(s, chunk, _MODE_REVERSE):
                     yield result
+
+    # -- chunking with subdivide-on-failure ------------------------------------
 
     async def _geocode_chunk(
         self,
         session: aiohttp.ClientSession,
-        chunk: List,
+        chunk: list,
         mode: str,
-    ) -> AsyncIterator[Dict]:
+    ) -> AsyncIterator[dict]:
         try:
             csv_text = await self._post_chunk(session, chunk, mode)
         except _PersistentBatchFailure as exc:
@@ -140,70 +137,14 @@ class EtalabSyncCsvGeocoder:
         for parsed in _parse_response_csv(csv_text, mode):
             yield parsed
 
-    async def _post_chunk(
-        self,
-        session: aiohttp.ClientSession,
-        chunk: List,
-        mode: str,
-    ) -> str:
-        csv_payload, has_insee, has_postcode = _build_input_csv(chunk, mode)
-        endpoint = "/search/csv" if mode == _MODE_FORWARD else "/reverse/csv"
-        url = f"{self._base_url}{endpoint}"
-        last_failure = "no attempt made"
-
-        for attempt in range(self._max_retries):
-            is_last = attempt + 1 == self._max_retries
-            form = aiohttp.FormData()
-            form.add_field(
-                "data",
-                csv_payload,
-                filename="input.csv",
-                content_type="text/csv; charset=utf-8",
-            )
-            if mode == _MODE_FORWARD:
-                form.add_field("columns", "address")
-                if has_insee:
-                    form.add_field("citycode", "citycode")
-                if has_postcode:
-                    form.add_field("postcode", "postcode")
-            form.add_field("indexes", "address")
-
-            async with session.post(url, data=form) as resp:
-                status = resp.status
-                if status == 200:
-                    try:
-                        return await resp.text()
-                    except aiohttp.ClientPayloadError as e:
-                        last_failure = f"HTTP 200 truncated payload: {e}"
-                        wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
-                elif status == 429:
-                    wait = retry_after_seconds(resp, default=5.0)
-                    last_failure = f"HTTP 429 (rate-limited, retry-after={wait:.1f}s)"
-                elif 500 <= status < 600:
-                    body = await safe_text(resp)
-                    last_failure = f"HTTP {status}: {body[:500]}"
-                    wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
-                else:
-                    body = await safe_text(resp)
-                    raise _PersistentBatchFailure(f"HTTP {status}: {body[:500]}")
-            if is_last:
-                break
-            logger.warning(
-                "retrying %s after %s (attempt %d/%d), backing off %ds",
-                endpoint, last_failure, attempt + 1, self._max_retries, wait,
-            )
-            await asyncio.sleep(wait)
-
-        raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}: {last_failure}")
-
     async def _geocode_dict_chunk(
         self,
         session: aiohttp.ClientSession,
-        chunk: List[Dict],
+        chunk: list[dict],
         match_columns: Sequence[str],
-        citycode_column: Optional[str],
-        postcode_column: Optional[str],
-    ) -> AsyncIterator[Dict]:
+        citycode_column: str | None,
+        postcode_column: str | None,
+    ) -> AsyncIterator[dict]:
         try:
             csv_text = await self._post_dict_chunk(
                 session, chunk, match_columns, citycode_column, postcode_column,
@@ -229,36 +170,21 @@ class EtalabSyncCsvGeocoder:
         for parsed in _parse_dict_response_csv(csv_text):
             yield parsed
 
-    async def _post_dict_chunk(
+    # -- HTTP POST with retry --------------------------------------------------
+
+    async def _post_with_retry(
         self,
         session: aiohttp.ClientSession,
-        chunk: List[Dict],
-        match_columns: Sequence[str],
-        citycode_column: Optional[str],
-        postcode_column: Optional[str],
+        url: str,
+        build_form: Callable[[], aiohttp.FormData],
+        label: str,
     ) -> str:
-        csv_payload = _build_dict_csv(chunk)
-        url = f"{self._base_url}/search/csv"
         last_failure = "no attempt made"
 
         for attempt in range(self._max_retries):
             is_last = attempt + 1 == self._max_retries
-            form = aiohttp.FormData()
-            form.add_field(
-                "data",
-                csv_payload,
-                filename="input.csv",
-                content_type="text/csv; charset=utf-8",
-            )
-            for col in match_columns:
-                form.add_field("columns", col)
-            if citycode_column:
-                form.add_field("citycode", citycode_column)
-            if postcode_column:
-                form.add_field("postcode", postcode_column)
-            form.add_field("indexes", "address")
 
-            async with session.post(url, data=form) as resp:
+            async with session.post(url, data=build_form()) as resp:
                 status = resp.status
                 if status == 200:
                     try:
@@ -279,17 +205,74 @@ class EtalabSyncCsvGeocoder:
             if is_last:
                 break
             logger.warning(
-                "retrying /search/csv after %s (attempt %d/%d), backing off %ds",
-                last_failure, attempt + 1, self._max_retries, wait,
+                "retrying %s after %s (attempt %d/%d), backing off %ds",
+                label, last_failure, attempt + 1, self._max_retries, wait,
             )
             await asyncio.sleep(wait)
 
         raise _PersistentBatchFailure(
-            f"exhausted {self._max_retries} retries on /search/csv: {last_failure}"
+            f"exhausted {self._max_retries} retries on {label}: {last_failure}"
         )
 
+    async def _post_chunk(
+        self,
+        session: aiohttp.ClientSession,
+        chunk: list,
+        mode: str,
+    ) -> str:
+        csv_payload, has_insee, has_postcode = _build_input_csv(chunk, mode)
+        endpoint = "/search/csv" if mode == _MODE_FORWARD else "/reverse/csv"
+        url = f"{self._base_url}{endpoint}"
 
-def _build_input_csv(chunk: List, mode: str) -> Tuple[bytes, bool, bool]:
+        def build_form() -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field(
+                "data", csv_payload,
+                filename="input.csv", content_type="text/csv; charset=utf-8",
+            )
+            if mode == _MODE_FORWARD:
+                form.add_field("columns", "address")
+                if has_insee:
+                    form.add_field("citycode", "citycode")
+                if has_postcode:
+                    form.add_field("postcode", "postcode")
+            form.add_field("indexes", "address")
+            return form
+
+        return await self._post_with_retry(session, url, build_form, endpoint)
+
+    async def _post_dict_chunk(
+        self,
+        session: aiohttp.ClientSession,
+        chunk: list[dict],
+        match_columns: Sequence[str],
+        citycode_column: str | None,
+        postcode_column: str | None,
+    ) -> str:
+        csv_payload = _build_dict_csv(chunk)
+        url = f"{self._base_url}/search/csv"
+
+        def build_form() -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field(
+                "data", csv_payload,
+                filename="input.csv", content_type="text/csv; charset=utf-8",
+            )
+            for col in match_columns:
+                form.add_field("columns", col)
+            if citycode_column:
+                form.add_field("citycode", citycode_column)
+            if postcode_column:
+                form.add_field("postcode", postcode_column)
+            form.add_field("indexes", "address")
+            return form
+
+        return await self._post_with_retry(session, url, build_form, "/search/csv")
+
+
+# -- CSV building / parsing (module-level helpers) -----------------------------
+
+def _build_input_csv(chunk: list, mode: str) -> tuple[bytes, bool, bool]:
     buf = io.StringIO()
     writer = csv.writer(buf)
     if mode == _MODE_FORWARD:
@@ -315,21 +298,13 @@ def _build_input_csv(chunk: List, mode: str) -> Tuple[bytes, bool, bool]:
     return buf.getvalue().encode("utf-8"), False, False
 
 
-def _normalize_forward_row(row: Tuple) -> Tuple[str, Optional[str], Optional[str]]:
-    if len(row) == 2:
-        return row[0], row[1], None
-    if len(row) == 3:
-        return row[0], row[1], row[2]
-    raise ValueError(f"forward row must be (addr, insee) or (addr, insee, postcode); got {row!r}")
-
-
 def _parse_response_csv(csv_text: str, mode: str):
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
         yield _row_to_result(row, mode)
 
 
-def _row_to_result(row: Dict[str, str], mode: str) -> Dict:
+def _row_to_result(row: dict[str, str], mode: str) -> dict:
     status = (row.get("result_status") or "").strip()
     found = status == "ok"
     if mode == _MODE_FORWARD:
@@ -378,7 +353,7 @@ def _row_to_result(row: Dict[str, str], mode: str) -> Dict:
     }
 
 
-def _error_row(row, mode: str) -> Dict:
+def _error_row(row, mode: str) -> dict:
     if mode == _MODE_FORWARD:
         addr = row[0]
         return {"found_result": False, "postal_address": addr, "result_status": "error"}
@@ -386,7 +361,7 @@ def _error_row(row, mode: str) -> Dict:
     return {"found_result": False, "lng": lng, "lat": lat, "result_status": "error"}
 
 
-def _to_float(s: Optional[str]) -> Optional[float]:
+def _to_float(s: str | None) -> float | None:
     if s is None or s == "":
         return None
     try:
@@ -395,8 +370,8 @@ def _to_float(s: Optional[str]) -> Optional[float]:
         return None
 
 
-def _build_dict_csv(chunk: List[Dict]) -> bytes:
-    fieldnames: List[str] = []
+def _build_dict_csv(chunk: list[dict]) -> bytes:
+    fieldnames: list[str] = []
     seen = set()
     for row in chunk:
         for k in row.keys():
@@ -411,13 +386,13 @@ def _build_dict_csv(chunk: List[Dict]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def _parse_dict_response_csv(csv_text: str) -> Iterable[Dict]:
+def _parse_dict_response_csv(csv_text: str) -> Iterable[dict]:
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
         yield _dict_row_to_result(row)
 
 
-def _dict_row_to_result(row: Dict[str, str]) -> Dict:
+def _dict_row_to_result(row: dict[str, str]) -> dict:
     out = dict(row)
     status = (row.get("result_status") or "").strip()
     out["result_status"] = status or "not-found"
@@ -430,5 +405,3 @@ def _dict_row_to_result(row: Dict[str, str]) -> Dict:
     out["result_score"] = _to_float(row.get("result_score"))
     out["result_score_next"] = _to_float(row.get("result_score_next"))
     return out
-
-

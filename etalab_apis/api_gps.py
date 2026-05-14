@@ -1,33 +1,30 @@
 import asyncio
-import contextlib
 import logging
 from time import time
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Mapping, Union
 
 import aiohttp
 from tqdm import tqdm
 
-from etalab_apis.utils.http import MAX_BACKOFF_SECONDS, retry_after_seconds, safe_text
+from etalab_apis.utils.http import (
+    GEOPF_BASE_URL,
+    MAX_BACKOFF_SECONDS,
+    normalize_forward_tuple,
+    retry_after_seconds,
+    safe_text,
+    session_for,
+)
 
 logger = logging.getLogger(__name__)
 
-GEOPF_BASE_URL = "https://data.geopf.fr/geocodage"
 DEFAULT_MAX_CONCURRENT = 20
 DEFAULT_MAX_RETRIES = 5
-
-
-def _normalize_query_tuple(row: Tuple) -> Tuple[str, Optional[str], Optional[str]]:
-    if len(row) == 2:
-        return row[0], row[1], None
-    if len(row) == 3:
-        return row[0], row[1], row[2]
-    raise ValueError(f"row must be (addr, insee) or (addr, insee, postcode); got {row!r}")
 
 
 class EtalabGpsApi:
     def __init__(
         self,
-        session: Optional[aiohttp.ClientSession] = None,
+        session: aiohttp.ClientSession | None = None,
         base_url: str = GEOPF_BASE_URL,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -37,24 +34,14 @@ class EtalabGpsApi:
         self._max_concurrent = max_concurrent
         self._max_retries = max_retries
 
-    @contextlib.asynccontextmanager
-    async def _session_for(self, session: Optional[aiohttp.ClientSession]):
-        if session is not None:
-            yield session
-        elif self._session is not None:
-            yield self._session
-        else:
-            async with aiohttp.ClientSession() as s:
-                yield s
-
     def _build_search_request(
         self,
         postal_address: str,
-        insee_city_code: Optional[str] = None,
-        postcode: Optional[str] = None,
+        insee_city_code: str | None = None,
+        postcode: str | None = None,
         limit: int = 1,
-    ) -> Tuple[str, Dict[str, str]]:
-        params: Dict[str, str] = {
+    ) -> tuple[str, dict[str, str]]:
+        params: dict[str, str] = {
             "q": postal_address,
             "index": "address",
             "limit": str(limit),
@@ -67,8 +54,8 @@ class EtalabGpsApi:
 
     def _build_reverse_request(
         self, lng: float, lat: float, limit: int = 1
-    ) -> Tuple[str, Dict[str, str]]:
-        params: Dict[str, str] = {
+    ) -> tuple[str, dict[str, str]]:
+        params: dict[str, str] = {
             "lon": str(lng),
             "lat": str(lat),
             "index": "address",
@@ -77,7 +64,7 @@ class EtalabGpsApi:
         return f"{self._base_url}/reverse", params
 
     @staticmethod
-    def _read_json_response(json_response: dict) -> Optional[Dict]:
+    def _read_json_response(json_response: dict) -> dict | None:
         features = json_response.get("features")
         if not features:
             return None
@@ -101,17 +88,9 @@ class EtalabGpsApi:
         self,
         session: aiohttp.ClientSession,
         url: str,
-        params: Dict[str, str],
+        params: dict[str, str],
         ctx: str,
-    ) -> Optional[Dict]:
-        """GET url with retry on 429/5xx. Returns parsed JSON dict, or None on terminal failure.
-
-        Retries:
-        - 429: honors retry-after header, retries until exhaustion.
-        - 5xx / 504: exponential backoff capped at MAX_BACKOFF_SECONDS, retries until exhaustion.
-        - 4xx-non-429: no retry, logs and returns None.
-        - JSON parse failure on 200: logs and returns None.
-        """
+    ) -> dict | None:
         for attempt in range(self._max_retries):
             is_last = attempt + 1 == self._max_retries
             async with session.get(url, params=params) as response:
@@ -146,17 +125,17 @@ class EtalabGpsApi:
     async def get_gps_coordinates(
         self,
         postal_address: str,
-        insee_city_code: Optional[str] = None,
-        postcode: Optional[str] = None,
+        insee_city_code: str | None = None,
+        postcode: str | None = None,
         limit: int = 1,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> Dict:
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict:
         if len(postal_address) < 4:
             return {"found_result": False, "postal_address": postal_address}
         postal_address = postal_address[:200]
         url, params = self._build_search_request(postal_address, insee_city_code, postcode, limit)
 
-        async with self._session_for(session) as s:
+        async with session_for(session, self._session) as s:
             json_response = await self._get_json_with_retry(s, url, params, postal_address)
 
         result = self._read_json_response(json_response) if json_response is not None else None
@@ -169,18 +148,15 @@ class EtalabGpsApi:
         self,
         row: Mapping[str, Any],
         address_column: str = "address",
-        citycode_column: Optional[str] = None,
-        postcode_column: Optional[str] = None,
+        citycode_column: str | None = None,
+        postcode_column: str | None = None,
         limit: int = 1,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> Dict:
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict:
         """Geocode a single dict-shaped row; preserve all input keys, attach result fields.
 
         Returns the input row echoed verbatim plus parsed result fields under
-        result_*-style names for symmetry with EtalabSyncCsvGeocoder.geocode_with_columns:
-        lat, lng, gps, result_label, result_city, result_postcode, result_citycode,
-        result_score, result_score_next (always None on unitary), result_status,
-        found_result. Input keys colliding with these are overwritten.
+        result_*-style names for symmetry with EtalabSyncCsvGeocoder.geocode_with_columns.
         """
         addr = row[address_column]
         insee = row.get(citycode_column) if citycode_column else None
@@ -209,17 +185,17 @@ class EtalabGpsApi:
 
     async def batch_gps_coordinates(
         self,
-        postal_addresses: Optional[List[str]] = None,
-        addresses_insees: Optional[List[Tuple]] = None,
-    ) -> List[Dict]:
+        postal_addresses: list[str] | None = None,
+        addresses_insees: list[tuple] | None = None,
+    ) -> list[dict]:
         if postal_addresses and addresses_insees:
             raise ValueError("pass either postal_addresses or addresses_insees, not both")
         if postal_addresses:
-            items: List[Tuple[str, Optional[str], Optional[str]]] = [
+            items: list[tuple[str, str | None, str | None]] = [
                 (addr, None, None) for addr in postal_addresses
             ]
         elif addresses_insees:
-            items = [_normalize_query_tuple(row) for row in addresses_insees]
+            items = [normalize_forward_tuple(row) for row in addresses_insees]
         else:
             return []
 
@@ -229,42 +205,43 @@ class EtalabGpsApi:
         async def bounded(
             s: aiohttp.ClientSession,
             addr: str,
-            insee: Optional[str],
-            postcode: Optional[str],
-        ) -> Dict:
+            insee: str | None,
+            postcode: str | None,
+        ) -> dict:
             async with sem:
                 try:
                     return await self.get_gps_coordinates(addr, insee, postcode=postcode, session=s)
                 finally:
                     pbar.update(1)
 
-        async with self._session_for(None) as session:
+        async with session_for(None, self._session) as s:
             try:
-                return await asyncio.gather(*(bounded(session, a, i, pc) for a, i, pc in items))
+                return list(await asyncio.gather(*(bounded(s, a, i, pc) for a, i, pc in items)))
             finally:
                 pbar.close()
 
     async def get_address_from_gps(
         self,
-        gps_long_lat: Union[Dict, Tuple],
+        gps_long_lat: Union[dict, tuple],
         limit: int = 1,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> Optional[Dict]:
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict:
+        not_found = {"found_result": False, "lng": "", "lat": ""}
         if isinstance(gps_long_lat, dict):
             lng = gps_long_lat["lng"]
             lat = gps_long_lat["lat"]
         else:
             lng, lat = gps_long_lat[0], gps_long_lat[1]
         if lng is None or lat is None:
-            return None
+            return not_found
 
         url, params = self._build_reverse_request(lng, lat, limit)
         ctx = f"reverse ({lng}, {lat})"
-        async with self._session_for(session) as s:
+        async with session_for(session, self._session) as s:
             json_response = await self._get_json_with_retry(s, url, params, ctx)
         if json_response is None:
-            return None
-        return self._read_json_response(json_response)
+            return not_found
+        return self._read_json_response(json_response) or not_found
 
 
 if __name__ == "__main__":
@@ -278,13 +255,10 @@ if __name__ == "__main__":
     ]
 
     dvf_api = EtalabGpsApi()
-    try:
-        gps_datas = asyncio.run(dvf_api.batch_gps_coordinates(addresses_insees=my_postal_addresses))
-        print(gps_datas)
-        postal_address = "1 FOND DE BOSSART 08460 NEUFMAISON"
-        gps_datas = asyncio.run(dvf_api.get_gps_coordinates(postal_address=postal_address))
-        print(gps_datas)
-    except Exception as e:
-        print(e)
+    gps_datas = asyncio.run(dvf_api.batch_gps_coordinates(addresses_insees=my_postal_addresses))
+    print(gps_datas)
+    postal_address = "1 FOND DE BOSSART 08460 NEUFMAISON"
+    gps_datas = asyncio.run(dvf_api.get_gps_coordinates(postal_address=postal_address))
+    print(gps_datas)
 
     print(f"App ran in {round(time() - start, 3)} seconds")

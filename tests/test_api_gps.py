@@ -69,14 +69,12 @@ async def test_batch_gps_coordinates_with_insee():
 
 
 @pytest.mark.asyncio
-async def test_batch_gps_coordinates_with_insee():
-    """test the gps method with a List Tuples containing the address and the commune INSEE code
-    """
+async def test_get_address_from_gps():
+    """Reverse geocode a known Paris coordinate."""
     gps_long_lat_paris: tuple = (2.35222190, 48.85661400)
     dvf_api = EtalabGpsApi()
 
     gps_datas = await dvf_api.get_address_from_gps(gps_long_lat_paris)
-    print(gps_datas)
     assert gps_datas.get("city") == "Paris"
 
 
