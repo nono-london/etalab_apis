@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from time import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import aiohttp
 from tqdm import tqdm
@@ -94,6 +94,7 @@ class EtalabGpsApi:
             "insee_city_code": props.get("citycode"),
             "city": props.get("city"),
             "postal_address": props.get("label"),
+            "result_score": props.get("score"),
         }
 
     async def _get_json_with_retry(
@@ -163,6 +164,48 @@ class EtalabGpsApi:
             return {"found_result": False, "postal_address": postal_address}
         result["found_result"] = True
         return result
+
+    async def get_gps_coordinates_with_extras(
+        self,
+        row: Mapping[str, Any],
+        address_column: str = "address",
+        citycode_column: Optional[str] = None,
+        postcode_column: Optional[str] = None,
+        limit: int = 1,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> Dict:
+        """Geocode a single dict-shaped row; preserve all input keys, attach result fields.
+
+        Returns the input row echoed verbatim plus parsed result fields under
+        result_*-style names for symmetry with EtalabSyncCsvGeocoder.geocode_with_columns:
+        lat, lng, gps, result_label, result_city, result_postcode, result_citycode,
+        result_score, result_score_next (always None on unitary), result_status,
+        found_result. Input keys colliding with these are overwritten.
+        """
+        addr = row[address_column]
+        insee = row.get(citycode_column) if citycode_column else None
+        pc = row.get(postcode_column) if postcode_column else None
+        canonical = await self.get_gps_coordinates(
+            postal_address=addr,
+            insee_city_code=insee,
+            postcode=pc,
+            limit=limit,
+            session=session,
+        )
+        out = dict(row)
+        found = canonical.get("found_result", False)
+        out["found_result"] = found
+        out["lat"] = canonical.get("lat")
+        out["lng"] = canonical.get("lng")
+        out["gps"] = canonical.get("gps")
+        out["result_score"] = canonical.get("result_score")
+        out["result_score_next"] = None
+        out["result_label"] = canonical.get("postal_address")
+        out["result_city"] = canonical.get("city")
+        out["result_postcode"] = canonical.get("postcode")
+        out["result_citycode"] = canonical.get("insee_city_code")
+        out["result_status"] = "ok" if found else "not-found"
+        return out
 
     async def batch_gps_coordinates(
         self,

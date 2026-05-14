@@ -105,3 +105,18 @@ async def test_batch_gps_coordinates_with_postcode_tuple():
     for r in gps_datas:
         assert r.get("city") == "Paris"
         assert r.get("postcode") == "75002"
+
+
+@pytest.mark.asyncio
+async def test_get_gps_coordinates_with_extras_passthrough_live():
+    """Unitary dict-in/dict-out: siret echoed verbatim alongside parsed result fields."""
+    dvf_api = EtalabGpsApi()
+    row = {"siret": "12345678900001", "address": "2 rue de la paix 75002 Paris"}
+    result = await dvf_api.get_gps_coordinates_with_extras(row)
+    assert result["siret"] == "12345678900001"
+    assert result["found_result"] is True
+    assert result["result_city"] == "Paris"
+    assert result["result_postcode"] == "75002"
+    assert isinstance(result["lat"], float)
+    assert isinstance(result["lng"], float)
+    assert result["result_status"] == "ok"

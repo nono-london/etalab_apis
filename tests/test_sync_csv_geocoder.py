@@ -134,3 +134,53 @@ async def test_geocode_with_postcode_live_smoke():
         assert r["found_result"], r
         assert r["city"] == "Paris"
         assert r["postcode"] == "75002"
+
+
+@pytest.mark.asyncio
+async def test_geocode_with_columns_passthrough_siret_live():
+    """Arbitrary passthrough column (siret) is echoed verbatim on every result row,
+    alongside the parsed geocoding fields.
+    """
+    rows = [
+        {"siret": "12345678900001", "address": "2 rue de la paix 75002 Paris"},
+        {"siret": "98765432100022", "address": "29 rue de la paix 75002 Paris"},
+    ]
+
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode_with_columns(iter(rows)):
+        results.append(r)
+
+    assert len(results) == 2
+    assert results[0]["siret"] == "12345678900001"
+    assert results[1]["siret"] == "98765432100022"
+    for r in results:
+        assert r["found_result"], r
+        assert r["result_city"] == "Paris"
+        assert r["result_postcode"] == "75002"
+        assert isinstance(r["lat"], float)
+        assert isinstance(r["lng"], float)
+        assert 0.0 <= r["result_score"] <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_geocode_with_columns_postcode_and_passthrough_live():
+    """Passthrough siret + postcode filter column wired through together."""
+    rows = [
+        {"siret": "11111111100011", "addr": "2 rue de la paix", "pc": "75002"},
+        {"siret": "22222222200022", "addr": "29 rue de la paix", "pc": "75002"},
+    ]
+
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode_with_columns(
+        iter(rows), match_columns=("addr",), postcode_column="pc",
+    ):
+        results.append(r)
+
+    assert len(results) == 2
+    assert {r["siret"] for r in results} == {"11111111100011", "22222222200022"}
+    for r in results:
+        assert r["found_result"], r
+        assert r["result_city"] == "Paris"
+        assert r["result_postcode"] == "75002"
