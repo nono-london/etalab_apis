@@ -78,3 +78,30 @@ async def test_batch_gps_coordinates_with_insee():
     gps_datas = await dvf_api.get_address_from_gps(gps_long_lat_paris)
     print(gps_datas)
     assert gps_datas.get("city") == "Paris"
+
+
+@pytest.mark.asyncio
+async def test_get_gps_coordinates_with_postcode():
+    """postcode hint disambiguates an ambiguous street name to Paris 2e."""
+    dvf_api = EtalabGpsApi()
+    gps_datas = await dvf_api.get_gps_coordinates(
+        postal_address="2 rue de la paix", postcode="75002",
+    )
+    assert gps_datas.get("found_result") is True
+    assert gps_datas.get("city") == "Paris"
+    assert gps_datas.get("postcode") == "75002"
+
+
+@pytest.mark.asyncio
+async def test_batch_gps_coordinates_with_postcode_tuple():
+    """batch_gps_coordinates accepts 3-tuples (addr, insee, postcode)."""
+    addresses = [
+        ("2 rue de la paix", None, "75002"),
+        ("29 rue de la paix", None, "75002"),
+    ]
+    dvf_api = EtalabGpsApi()
+    gps_datas = await dvf_api.batch_gps_coordinates(addresses_insees=addresses)
+    assert len(gps_datas) == 2
+    for r in gps_datas:
+        assert r.get("city") == "Paris"
+        assert r.get("postcode") == "75002"

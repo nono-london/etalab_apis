@@ -56,11 +56,11 @@ class EtalabSyncCsvGeocoder:
 
     async def geocode(
         self,
-        rows: Iterable[Tuple[str, Optional[str]]],
+        rows: Iterable[Tuple],
         chunk_rows: int = MAX_ROWS_PER_BATCH,
     ) -> AsyncIterator[Dict]:
         async with self._session_for(None) as session:
-            iterator = iter(rows)
+            iterator = (_normalize_forward_row(r) for r in rows)
             while True:
                 chunk = list(itertools.islice(iterator, chunk_rows))
                 if not chunk:
@@ -113,7 +113,7 @@ class EtalabSyncCsvGeocoder:
         chunk: List,
         mode: str,
     ) -> str:
-        csv_payload, has_insee = _build_input_csv(chunk, mode)
+        csv_payload, has_insee, has_postcode = _build_input_csv(chunk, mode)
         endpoint = "/search/csv" if mode == _MODE_FORWARD else "/reverse/csv"
         url = f"{self._base_url}{endpoint}"
         last_failure = "no attempt made"
@@ -131,6 +131,8 @@ class EtalabSyncCsvGeocoder:
                 form.add_field("columns", "address")
                 if has_insee:
                     form.add_field("citycode", "citycode")
+                if has_postcode:
+                    form.add_field("postcode", "postcode")
             form.add_field("indexes", "address")
 
             async with session.post(url, data=form) as resp:
@@ -162,24 +164,38 @@ class EtalabSyncCsvGeocoder:
         raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}: {last_failure}")
 
 
-def _build_input_csv(chunk: List, mode: str) -> Tuple[bytes, bool]:
+def _build_input_csv(chunk: List, mode: str) -> Tuple[bytes, bool, bool]:
     buf = io.StringIO()
     writer = csv.writer(buf)
     if mode == _MODE_FORWARD:
-        has_insee = any(insee for _, insee in chunk)
+        has_insee = any(insee for _, insee, _ in chunk)
+        has_postcode = any(pc for _, _, pc in chunk)
+        header = ["address"]
         if has_insee:
-            writer.writerow(["address", "citycode"])
-            for addr, insee in chunk:
-                writer.writerow([addr, insee or ""])
-        else:
-            writer.writerow(["address"])
-            for addr, _ in chunk:
-                writer.writerow([addr])
-        return buf.getvalue().encode("utf-8"), has_insee
+            header.append("citycode")
+        if has_postcode:
+            header.append("postcode")
+        writer.writerow(header)
+        for addr, insee, postcode in chunk:
+            row = [addr]
+            if has_insee:
+                row.append(insee or "")
+            if has_postcode:
+                row.append(postcode or "")
+            writer.writerow(row)
+        return buf.getvalue().encode("utf-8"), has_insee, has_postcode
     writer.writerow(["lon", "lat"])
     for lng, lat in chunk:
         writer.writerow([lng, lat])
-    return buf.getvalue().encode("utf-8"), False
+    return buf.getvalue().encode("utf-8"), False, False
+
+
+def _normalize_forward_row(row: Tuple) -> Tuple[str, Optional[str], Optional[str]]:
+    if len(row) == 2:
+        return row[0], row[1], None
+    if len(row) == 3:
+        return row[0], row[1], row[2]
+    raise ValueError(f"forward row must be (addr, insee) or (addr, insee, postcode); got {row!r}")
 
 
 def _parse_response_csv(csv_text: str, mode: str):
@@ -239,7 +255,7 @@ def _row_to_result(row: Dict[str, str], mode: str) -> Dict:
 
 def _error_row(row, mode: str) -> Dict:
     if mode == _MODE_FORWARD:
-        addr, _ = row
+        addr = row[0]
         return {"found_result": False, "postal_address": addr, "result_status": "error"}
     lng, lat = row
     return {"found_result": False, "lng": lng, "lat": lat, "result_status": "error"}

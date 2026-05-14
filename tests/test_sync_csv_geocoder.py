@@ -114,3 +114,23 @@ async def test_geocode_empty_input_yields_no_results():
     async for r in geocoder.geocode([]):
         results.append(r)
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_geocode_with_postcode_live_smoke():
+    """3-tuple (addr, insee, postcode) — postcode column is sent and disambiguates the match."""
+    rows = [
+        ("2 rue de la paix", None, "75002"),
+        ("29 rue de la paix", None, "75002"),
+    ]
+
+    geocoder = EtalabSyncCsvGeocoder()
+    results = []
+    async for r in geocoder.geocode(iter(rows)):
+        results.append(r)
+
+    assert len(results) == 2
+    for r in results:
+        assert r["found_result"], r
+        assert r["city"] == "Paris"
+        assert r["postcode"] == "75002"

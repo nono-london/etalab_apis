@@ -16,6 +16,14 @@ DEFAULT_MAX_CONCURRENT = 20
 DEFAULT_MAX_RETRIES = 5
 
 
+def _normalize_query_tuple(row: Tuple) -> Tuple[str, Optional[str], Optional[str]]:
+    if len(row) == 2:
+        return row[0], row[1], None
+    if len(row) == 3:
+        return row[0], row[1], row[2]
+    raise ValueError(f"row must be (addr, insee) or (addr, insee, postcode); got {row!r}")
+
+
 class EtalabGpsApi:
     def __init__(
         self,
@@ -43,6 +51,7 @@ class EtalabGpsApi:
         self,
         postal_address: str,
         insee_city_code: Optional[str] = None,
+        postcode: Optional[str] = None,
         limit: int = 1,
     ) -> Tuple[str, Dict[str, str]]:
         params: Dict[str, str] = {
@@ -52,6 +61,8 @@ class EtalabGpsApi:
         }
         if insee_city_code:
             params["citycode"] = insee_city_code
+        if postcode:
+            params["postcode"] = postcode
         return f"{self._base_url}/search", params
 
     def _build_reverse_request(
@@ -103,49 +114,46 @@ class EtalabGpsApi:
         for attempt in range(self._max_retries):
             is_last = attempt + 1 == self._max_retries
             async with session.get(url, params=params) as response:
-                if response.status == 200:
+                status = response.status
+                if status == 200:
                     try:
                         return await response.json()
                     except Exception:
                         logger.exception("failed to parse JSON for %s", ctx)
                         return None
-                if response.status == 429:
+                if status == 429:
                     wait = retry_after_seconds(response, default=5.0)
-                    if is_last:
-                        logger.error("429 rate-limited for %s, retries exhausted", ctx)
-                        return None
-                    logger.warning("429 for %s, sleeping %.1fs", ctx, wait)
-                    await asyncio.sleep(wait)
-                    continue
-                if response.status == 504 or 500 <= response.status < 600:
-                    if is_last:
-                        logger.error(
-                            "HTTP %s for %s, retries exhausted", response.status, ctx
-                        )
-                        return None
+                elif 500 <= status < 600:
                     wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
-                    logger.warning(
-                        "HTTP %s for %s (attempt %d/%d), backing off %ds",
-                        response.status, ctx, attempt + 1, self._max_retries, wait,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                body = await safe_text(response)
-                logger.error("HTTP %s for %s: %s", response.status, ctx, body)
+                else:
+                    body = await safe_text(response)
+                    logger.error("HTTP %s for %s: %s", status, ctx, body)
+                    return None
+            if is_last:
+                logger.error("HTTP %s for %s, retries exhausted", status, ctx)
                 return None
+            if status == 429:
+                logger.warning("429 for %s, sleeping %.1fs", ctx, wait)
+            else:
+                logger.warning(
+                    "HTTP %s for %s (attempt %d/%d), backing off %ds",
+                    status, ctx, attempt + 1, self._max_retries, wait,
+                )
+            await asyncio.sleep(wait)
         return None
 
     async def get_gps_coordinates(
         self,
         postal_address: str,
         insee_city_code: Optional[str] = None,
+        postcode: Optional[str] = None,
         limit: int = 1,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> Dict:
         if len(postal_address) < 4:
             return {"found_result": False, "postal_address": postal_address}
         postal_address = postal_address[:200]
-        url, params = self._build_search_request(postal_address, insee_city_code, limit)
+        url, params = self._build_search_request(postal_address, insee_city_code, postcode, limit)
 
         async with self._session_for(session) as s:
             json_response = await self._get_json_with_retry(s, url, params, postal_address)
@@ -159,28 +167,37 @@ class EtalabGpsApi:
     async def batch_gps_coordinates(
         self,
         postal_addresses: Optional[List[str]] = None,
-        addresses_insees: Optional[List[Tuple[str, Optional[str]]]] = None,
+        addresses_insees: Optional[List[Tuple]] = None,
     ) -> List[Dict]:
+        if postal_addresses and addresses_insees:
+            raise ValueError("pass either postal_addresses or addresses_insees, not both")
         if postal_addresses:
-            items: List[Tuple[str, Optional[str]]] = [(addr, None) for addr in postal_addresses]
+            items: List[Tuple[str, Optional[str], Optional[str]]] = [
+                (addr, None, None) for addr in postal_addresses
+            ]
         elif addresses_insees:
-            items = list(addresses_insees)
+            items = [_normalize_query_tuple(row) for row in addresses_insees]
         else:
             return []
 
         sem = asyncio.Semaphore(self._max_concurrent)
         pbar = tqdm(total=len(items))
 
-        async def bounded(s: aiohttp.ClientSession, addr: str, insee: Optional[str]) -> Dict:
+        async def bounded(
+            s: aiohttp.ClientSession,
+            addr: str,
+            insee: Optional[str],
+            postcode: Optional[str],
+        ) -> Dict:
             async with sem:
                 try:
-                    return await self.get_gps_coordinates(addr, insee, session=s)
+                    return await self.get_gps_coordinates(addr, insee, postcode=postcode, session=s)
                 finally:
                     pbar.update(1)
 
         async with self._session_for(None) as session:
             try:
-                return await asyncio.gather(*(bounded(session, a, i) for a, i in items))
+                return await asyncio.gather(*(bounded(session, a, i, pc) for a, i, pc in items))
             finally:
                 pbar.close()
 
