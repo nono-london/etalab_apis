@@ -118,3 +118,31 @@ async def test_get_gps_coordinates_with_extras_passthrough_live():
     assert isinstance(result["lat"], float)
     assert isinstance(result["lng"], float)
     assert result["result_status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_get_gps_coordinates_with_extras_citycode_live():
+    """Unitary dict-in/dict-out with citycode filter disambiguates to Paris 2e."""
+    dvf_api = EtalabGpsApi()
+    row = {"siret": "11111111100011", "address": "2 rue de la paix", "code_commune": "75102"}
+    result = await dvf_api.get_gps_coordinates_with_extras(
+        row, citycode_column="code_commune",
+    )
+    assert result["siret"] == "11111111100011"
+    assert result["found_result"] is True
+    assert result["result_city"] == "Paris"
+    assert result["result_citycode"] == "75102"
+
+
+@pytest.mark.asyncio
+async def test_get_gps_coordinates_with_extras_postcode_live():
+    """Unitary dict-in/dict-out with postcode filter disambiguates to Paris 2e."""
+    dvf_api = EtalabGpsApi()
+    row = {"siret": "22222222200022", "address": "2 rue de la paix", "cp": "75002"}
+    result = await dvf_api.get_gps_coordinates_with_extras(
+        row, postcode_column="cp",
+    )
+    assert result["siret"] == "22222222200022"
+    assert result["found_result"] is True
+    assert result["result_city"] == "Paris"
+    assert result["result_postcode"] == "75002"

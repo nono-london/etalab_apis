@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from time import time
-from typing import Any, Mapping, Union
+from typing import Any, Mapping
 
 import aiohttp
 from tqdm import tqdm
@@ -222,7 +222,7 @@ class EtalabGpsApi:
 
     async def get_address_from_gps(
         self,
-        gps_long_lat: Union[dict, tuple],
+        gps_long_lat: dict | tuple,
         limit: int = 1,
         session: aiohttp.ClientSession | None = None,
     ) -> dict:
