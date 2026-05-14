@@ -8,6 +8,7 @@ the live smoke tests in test_sync_csv_geocoder.py.
 from typing import List
 from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 from aioresponses import aioresponses
 
@@ -95,6 +96,68 @@ async def test_subdivide_on_persistent_failure_preserves_order(fake_sleep):
     assert results[99]["postal_address"] == "addr_99 (matched)"
     assert results[100]["postal_address"] == "addr_100 (matched)"
     assert results[199]["postal_address"] == "addr_199 (matched)"
+
+
+@pytest.mark.asyncio
+async def test_truncated_200_retried_then_success_tuple_path(fake_sleep, monkeypatch):
+    """Server returns 200 but the body is truncated: resp.text() raises ClientPayloadError.
+    Retry on the tuple-input path with exponential backoff; 3rd attempt succeeds.
+    """
+    real_text = aiohttp.ClientResponse.text
+    call_count = {"n": 0}
+
+    async def flaky_text(self):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise aiohttp.ClientPayloadError(
+                "Not enough data to satisfy transfer length header."
+            )
+        return await real_text(self)
+
+    monkeypatch.setattr(aiohttp.ClientResponse, "text", flaky_text)
+
+    with aioresponses() as m:
+        for _ in range(3):
+            m.post(SEARCH_CSV_URL, status=200, body=_ok_body(["2 rue paix"]))
+
+        geocoder = EtalabSyncCsvGeocoder()
+        results = [r async for r in geocoder.geocode([("2 rue paix", None)])]
+
+    assert len(results) == 1
+    assert results[0]["found_result"]
+    waits = [c.args[0] for c in fake_sleep.call_args_list]
+    assert waits == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_truncated_200_retried_then_success_dict_path(fake_sleep, monkeypatch):
+    """Same as above but via geocode_with_columns (dict input path)."""
+    real_text = aiohttp.ClientResponse.text
+    call_count = {"n": 0}
+
+    async def flaky_text(self):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise aiohttp.ClientPayloadError(
+                "Not enough data to satisfy transfer length header."
+            )
+        return await real_text(self)
+
+    monkeypatch.setattr(aiohttp.ClientResponse, "text", flaky_text)
+
+    with aioresponses() as m:
+        for _ in range(3):
+            m.post(SEARCH_CSV_URL, status=200, body=_ok_body(["2 rue paix"]))
+
+        geocoder = EtalabSyncCsvGeocoder()
+        results = [
+            r async for r in geocoder.geocode_with_columns([{"address": "2 rue paix"}])
+        ]
+
+    assert len(results) == 1
+    assert results[0]["found_result"]
+    waits = [c.args[0] for c in fake_sleep.call_args_list]
+    assert waits == [1, 2]
 
 
 @pytest.mark.asyncio

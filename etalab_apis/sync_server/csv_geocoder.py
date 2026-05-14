@@ -169,30 +169,30 @@ class EtalabSyncCsvGeocoder:
             form.add_field("indexes", "address")
 
             async with session.post(url, data=form) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-                if resp.status == 429:
+                status = resp.status
+                if status == 200:
+                    try:
+                        return await resp.text()
+                    except aiohttp.ClientPayloadError as e:
+                        last_failure = f"HTTP 200 truncated payload: {e}"
+                        wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
+                elif status == 429:
                     wait = retry_after_seconds(resp, default=5.0)
                     last_failure = f"HTTP 429 (rate-limited, retry-after={wait:.1f}s)"
-                    if is_last:
-                        break
-                    logger.warning("429 too many requests, sleeping %.1fs", wait)
-                    await asyncio.sleep(wait)
-                    continue
-                if 500 <= resp.status < 600:
+                elif 500 <= status < 600:
                     body = await safe_text(resp)
-                    last_failure = f"HTTP {resp.status}: {body[:500]}"
-                    if is_last:
-                        break
+                    last_failure = f"HTTP {status}: {body[:500]}"
                     wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
-                    logger.warning(
-                        "HTTP %s on %s (attempt %d/%d), backing off %ds: %s",
-                        resp.status, endpoint, attempt + 1, self._max_retries, wait, body[:200],
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                body = await safe_text(resp)
-                raise _PersistentBatchFailure(f"HTTP {resp.status}: {body[:500]}")
+                else:
+                    body = await safe_text(resp)
+                    raise _PersistentBatchFailure(f"HTTP {status}: {body[:500]}")
+            if is_last:
+                break
+            logger.warning(
+                "retrying %s after %s (attempt %d/%d), backing off %ds",
+                endpoint, last_failure, attempt + 1, self._max_retries, wait,
+            )
+            await asyncio.sleep(wait)
 
         raise _PersistentBatchFailure(f"exhausted {self._max_retries} retries on {endpoint}: {last_failure}")
 
@@ -261,8 +261,12 @@ class EtalabSyncCsvGeocoder:
             async with session.post(url, data=form) as resp:
                 status = resp.status
                 if status == 200:
-                    return await resp.text()
-                if status == 429:
+                    try:
+                        return await resp.text()
+                    except aiohttp.ClientPayloadError as e:
+                        last_failure = f"HTTP 200 truncated payload: {e}"
+                        wait = min(2 ** attempt, MAX_BACKOFF_SECONDS)
+                elif status == 429:
                     wait = retry_after_seconds(resp, default=5.0)
                     last_failure = f"HTTP 429 (rate-limited, retry-after={wait:.1f}s)"
                 elif 500 <= status < 600:
@@ -274,13 +278,10 @@ class EtalabSyncCsvGeocoder:
                     raise _PersistentBatchFailure(f"HTTP {status}: {body[:500]}")
             if is_last:
                 break
-            if status == 429:
-                logger.warning("429 too many requests, sleeping %.1fs", wait)
-            else:
-                logger.warning(
-                    "HTTP %s on /search/csv (attempt %d/%d), backing off %ds",
-                    status, attempt + 1, self._max_retries, wait,
-                )
+            logger.warning(
+                "retrying /search/csv after %s (attempt %d/%d), backing off %ds",
+                last_failure, attempt + 1, self._max_retries, wait,
+            )
             await asyncio.sleep(wait)
 
         raise _PersistentBatchFailure(
