@@ -85,6 +85,7 @@ async def test_retries_exhausted_returns_not_found_dict(fake_sleep):
     assert result == {
         "found_result": False,
         "postal_address": "2 rue de la paix 75002 Paris",
+        "result_status": "not-found",
     }
 
 

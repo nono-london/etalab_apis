@@ -75,7 +75,9 @@ async def test_get_address_from_gps():
     dvf_api = EtalabGpsApi()
 
     gps_datas = await dvf_api.get_address_from_gps(gps_long_lat_paris)
-    assert gps_datas.get("city") == "Paris"
+    assert gps_datas["found_result"] is True
+    assert gps_datas["result_status"] == "ok"
+    assert gps_datas["city"] == "Paris"
 
 
 @pytest.mark.asyncio

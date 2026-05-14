@@ -85,6 +85,8 @@ class EtalabGpsApi:
             "city": props.get("city"),
             "postal_address": props.get("label"),
             "result_score": props.get("score"),
+            "found_result": True,
+            "result_status": "ok",
         }
 
     async def _get_json_with_retry(
@@ -133,19 +135,18 @@ class EtalabGpsApi:
         limit: int = 1,
         session: aiohttp.ClientSession | None = None,
     ) -> dict:
+        not_found = {"found_result": False, "postal_address": postal_address, "result_status": "not-found"}
         if len(postal_address) < 4:
-            return {"found_result": False, "postal_address": postal_address}
+            return not_found
         postal_address = postal_address[:200]
+        not_found["postal_address"] = postal_address
         url, params = self._build_search_request(postal_address, insee_city_code, postcode, limit)
 
         async with session_for(session, self._session, self._timeout) as s:
             json_response = await self._get_json_with_retry(s, url, params, postal_address)
 
         result = self._read_json_response(json_response) if json_response is not None else None
-        if result is None:
-            return {"found_result": False, "postal_address": postal_address}
-        result["found_result"] = True
-        return result
+        return result if result is not None else not_found
 
     async def get_gps_coordinates_with_extras(
         self,
@@ -190,6 +191,7 @@ class EtalabGpsApi:
         self,
         postal_addresses: list[str] | None = None,
         addresses_insees: list[tuple] | None = None,
+        show_progress: bool = True,
     ) -> list[dict]:
         if postal_addresses and addresses_insees:
             raise ValueError("pass either postal_addresses or addresses_insees, not both")
@@ -205,7 +207,7 @@ class EtalabGpsApi:
         sem = asyncio.Semaphore(self._max_concurrent)
 
         async with session_for(None, self._session, self._timeout) as s:
-            pbar = tqdm(total=len(items))
+            pbar = tqdm(total=len(items), disable=not show_progress)
 
             async def bounded(
                 addr: str,
@@ -229,7 +231,7 @@ class EtalabGpsApi:
         limit: int = 1,
         session: aiohttp.ClientSession | None = None,
     ) -> dict:
-        not_found = {"found_result": False, "lng": "", "lat": ""}
+        not_found = {"found_result": False, "lng": None, "lat": None, "result_status": "not-found"}
         if isinstance(gps_long_lat, dict):
             lng = gps_long_lat["lng"]
             lat = gps_long_lat["lat"]
