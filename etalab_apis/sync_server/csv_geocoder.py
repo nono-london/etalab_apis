@@ -113,6 +113,39 @@ class EtalabSyncCsvGeocoder:
                 async for result in self._geocode_chunk(s, chunk, _MODE_REVERSE):
                     yield result
 
+    async def reverse_geocode_with_columns(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        chunk_rows: int = MAX_ROWS_PER_BATCH,
+    ) -> AsyncIterator[dict]:
+        """Bulk reverse-geocode rows with arbitrary passthrough columns.
+
+        Each input row is a dict (or any Mapping) that MUST contain the
+        coordinate columns "lat" and "lon" (WGS84 floats); every other column
+        is echoed back untouched by the server -- useful for join keys.
+
+        Yields dicts: every column from the response CSV (input passthrough +
+        the COMPLETE result_* payload: label, housenumber, name, street,
+        postcode, city, citycode, type, id, banId, distance, oldcitycode,
+        oldcity, district, status, ...) plus parsed convenience fields:
+        lat, lng, gps (matched point when found, else the input point),
+        found_result, result_score, result_distance, result_status
+        (normalized).
+        """
+        async with session_for(None, self._session, self._timeout) as s:
+            iterator = (dict(r) for r in rows)
+            while True:
+                chunk = list(itertools.islice(iterator, chunk_rows))
+                if not chunk:
+                    return
+                for row in chunk:
+                    if "lat" not in row or "lon" not in row:
+                        raise ValueError(
+                            f"reverse rows must contain 'lat' and 'lon' columns; got {list(row)!r}"
+                        )
+                async for result in self._reverse_dict_chunk(s, chunk):
+                    yield result
+
     # -- chunking with subdivide-on-failure ------------------------------------
 
     async def _geocode_chunk(
@@ -243,6 +276,49 @@ class EtalabSyncCsvGeocoder:
             return form
 
         return await self._post_with_retry(session, url, build_form, endpoint)
+
+    async def _reverse_dict_chunk(
+        self,
+        session: aiohttp.ClientSession,
+        chunk: list[dict],
+    ) -> AsyncIterator[dict]:
+        try:
+            csv_text = await self._post_reverse_dict_chunk(session, chunk)
+        except _PersistentBatchFailure as exc:
+            if len(chunk) <= self._min_subdivide_rows:
+                logger.error("giving up on reverse chunk of %d rows: %s", len(chunk), exc)
+                for row in chunk:
+                    yield {**row, "found_result": False, "result_status": "error"}
+                return
+            mid = len(chunk) // 2
+            logger.warning("subdividing reverse chunk of %d after persistent failure: %s",
+                           len(chunk), exc)
+            async for r in self._reverse_dict_chunk(session, chunk[:mid]):
+                yield r
+            async for r in self._reverse_dict_chunk(session, chunk[mid:]):
+                yield r
+            return
+
+        for parsed in _parse_reverse_dict_response_csv(csv_text):
+            yield parsed
+
+    async def _post_reverse_dict_chunk(
+        self,
+        session: aiohttp.ClientSession,
+        chunk: list[dict],
+    ) -> str:
+        csv_payload = _build_dict_csv(chunk)
+        url = f"{self._base_url}/reverse/csv"
+
+        def build_form() -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field(
+                "data", csv_payload,
+                filename="input.csv", content_type="text/csv; charset=utf-8",
+            )
+            return form
+
+        return await self._post_with_retry(session, url, build_form, "/reverse/csv")
 
     async def _post_dict_chunk(
         self,
@@ -421,6 +497,29 @@ def _parse_dict_response_csv(csv_text: str) -> Iterator[dict]:
     reader = csv.DictReader(io.StringIO(csv_text))
     for row in reader:
         yield _dict_row_to_result(row)
+
+
+def _parse_reverse_dict_response_csv(csv_text: str) -> Iterator[dict]:
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        yield _reverse_dict_row_to_result(row)
+
+
+def _reverse_dict_row_to_result(row: dict[str, str]) -> dict:
+    out = dict(row)
+    status = (row.get("result_status") or "").strip()
+    out["result_status"] = status or "not-found"
+    found = status == "ok"
+    out["found_result"] = found
+    # matched point when found, else echo the input point
+    lng = _to_float(row.get("result_longitude")) if found else _to_float(row.get("lon"))
+    lat = _to_float(row.get("result_latitude")) if found else _to_float(row.get("lat"))
+    out["lat"] = lat
+    out["lng"] = lng
+    out["gps"] = (lng, lat) if lng is not None and lat is not None else None
+    out["result_score"] = _to_float(row.get("result_score"))
+    out["result_distance"] = _to_float(row.get("result_distance"))
+    return out
 
 
 def _dict_row_to_result(row: dict[str, str]) -> dict:
